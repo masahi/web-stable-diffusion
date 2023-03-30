@@ -75,16 +75,23 @@ def test_qkv():
     class QKV_proj:
         @R.function
         def main(
-            x: R.Tensor((2, 1024, 640), "float32"),
+            x1: R.Tensor((2, 1024, 640), "float32"),
+            x2: R.Tensor((2, 1024, 640), "float32"),
             w0: R.Tensor((640, 640), "float32"),
             w1: R.Tensor((640, 640), "float32"),
             w2: R.Tensor((640, 640), "float32"),
+            w3: R.Tensor((640, 640), "float32"),
+            w4: R.Tensor((640, 640), "float32"),
+            w5: R.Tensor((640, 640), "float32"),
         ) -> R.Tensor:
             with R.dataflow():
-                lv0 = R.matmul(x, w0)
-                lv1 = R.matmul(x, w1)
-                lv2 = R.matmul(x, w2)
-                out = (lv0, lv1, lv2)
+                lv0 = R.matmul(x1, w0)
+                lv1 = R.matmul(x1, w1)
+                lv2 = R.matmul(x1, w2)
+                lv3 = R.matmul(x2, w3)
+                lv4 = R.matmul(x2, w4)
+                lv5 = R.matmul(x2, w5)
+                out = (lv0, lv1, lv2, lv3, lv4, lv5)
                 R.output(out)
             return out
 
@@ -98,14 +105,8 @@ def test_qkv():
         matmul2 = is_op("relax.matmul")(inp_pat, K_weight_pat)
         matmul3 = is_op("relax.matmul")(inp_pat, V_weight_pat)
 
-        dfb = QKV_proj["main"].body.blocks[0]
-        out = ctx.match_dfb(dfb)
-
-        assert out[Q_weight_pat].name_hint == "w0"
-        assert out[K_weight_pat].name_hint == "w1"
-        assert out[V_weight_pat].name_hint == "w2"
-
         def rewriter(matchings):
+            print(matchings)
             inp = matchings[inp_pat]
             Q_weight = matchings[Q_weight_pat]
             K_weight = matchings[K_weight_pat]
@@ -123,55 +124,4 @@ def test_qkv():
         print(rewrite_bindings(ctx, rewriter, QKV_proj["main"]))
 
 
-def test_CBR_x2_op():
-    @tvm.script.ir_module
-    class CBRx2:
-        @R.function
-        def main(
-            x: R.Tensor((1, 3, 32, 32), "float32"),
-            w0: R.Tensor((32, 3, 1, 1), "float32"),
-            bias0: R.Tensor((1, 32, 1, 1), "float32"),
-            w1: R.Tensor((32, 3, 1, 1), "float32"),
-            bias1: R.Tensor((1, 32, 1, 1), "float32"),
-        ) -> R.Tensor:
-            # R.TensorRT's CBR Optimization Pattern
-            #     input
-            #     /   \
-            #  cbr0   cbr1
-            #     \   /
-            #     concat
-            with R.dataflow():
-                lv0 = R.nn.conv2d(x, w0, padding=(1, 1))
-                lv1 = lv0 + bias0
-                lv2 = R.nn.relu(lv1)
-                lv3 = R.nn.conv2d(x, w1, padding=(1, 1))
-                lv4 = lv3 + bias1
-                lv5 = R.nn.relu(lv4)
-                lv6 = R.concat((lv2, lv5))
-                R.output(lv6)
-            return lv6
-
-    with PatternContext() as ctx:
-        inp = wildcard()
-        weight1 = wildcard()
-        weight2 = wildcard()
-        bias1_pat = wildcard()
-        bias2_pat = wildcard()
-
-        conv1 = is_op("relax.nn.conv2d")(inp, weight1)
-        bias1 = is_op("relax.add")(conv1, bias1_pat)
-        relu1 = is_op("relax.nn.relu")(bias1)
-
-        conv2 = is_op("relax.nn.conv2d")(inp, weight2)
-        bias2 = is_op("relax.add")(conv2, bias2_pat)
-        relu2 = is_op("relax.nn.relu")(bias2)
-
-        dfb = CBRx2["main"].body.blocks[0]
-        out = ctx.match_dfb(dfb)
-
-        print(out[relu1])
-        # print(out[weight1])
-
-
 test_qkv()
-# test_CBR_x2_op()

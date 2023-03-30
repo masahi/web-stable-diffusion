@@ -78,50 +78,6 @@ def rewrite_qkv_proj(f):
     return rewrite(pattern, callback, f)
 
 
-def rewrite_qkv_proj2(f):
-    def matmul_transposed_reshape(tensor, weight_transposed):
-        # lv51: R.Tensor((320, 320), dtype="float32") = R.permute_dims(unet_down_blocks_0_attentions_0_transformer_blocks_0_attn1_to_q_weight, axes=None)
-        # lv52: R.Tensor((2, 4096, 320), dtype="float32") = R.matmul(lv50, lv51, out_dtype="float32")
-        # lv_1: R.Tensor((2, 4096, 8, 40), dtype="float32") = R.reshape(lv52, R.shape([2, 4096, 8, 40]))
-        return is_op("relax.reshape")(is_op("relax.matmul")(tensor, weight_transposed), wildcard())
-
-    inp_pat = wildcard()
-    Q_weight_pat = wildcard()
-    K_weight_pat = wildcard()
-    V_weight_pat = wildcard()
-
-    Q = matmul_transposed_reshape(inp_pat, Q_weight_pat)
-    K = matmul_transposed_reshape(inp_pat, K_weight_pat)
-    V = matmul_transposed_reshape(inp_pat, V_weight_pat)
-
-    pattern = is_op("relax.nn.attention")(Q, K, V)
-
-    def callback(_, matchings):
-        inp = matchings[inp_pat]
-        Q_weight = matchings[Q_weight_pat]
-        K_weight = matchings[K_weight_pat]
-        V_weight = matchings[V_weight_pat]
-
-        width = Q_weight.struct_info.shape[1]
-        weight_concat = R.concat([Q_weight, K_weight, V_weight], axis=1)
-        matmul = R.matmul(inp, weight_concat)
-        Q = R.strided_slice(matmul, axes=[2], begin=[0], end=[width])
-        K = R.strided_slice(matmul, axes=[2], begin=[width], end=[width*2])
-        V = R.strided_slice(matmul, axes=[2], begin=[width*2], end=[width*3])
-
-        num_head = 8
-        hidden = width // num_head
-        seq_len = inp.struct_info.shape[1]
-
-        Q = R.reshape(Q, R.shape([2, seq_len, num_head, hidden]))
-        K = R.reshape(K, R.shape([2, seq_len, num_head, hidden]))
-        V = R.reshape(V, R.shape([2, seq_len, num_head, hidden]))
-
-        return R.nn.attention(Q, K, V)
-
-    return rewrite(pattern, callback, f)
-
-
 def simplify_div(f):
     lhs_pat = wildcard()
     rhs_pat = is_const()
