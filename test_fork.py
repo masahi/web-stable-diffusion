@@ -22,13 +22,27 @@ def test_CBR_x2():
             #     \   /
             #     concat
             with R.dataflow():
-                lv0 = R.call_dps_packed("conv1x1", (x, w0), R.Tensor((32, 32), dtype="float32"))
-                lv1 = R.call_dps_packed("bias_add", (lv0, bias0), R.Tensor((32, 32), dtype="float32"))
-                lv2 = R.call_dps_packed("my_relu", (lv1), R.Tensor((32, 32), dtype="float32"))
-                lv3 = R.call_dps_packed("conv1x1", (x, w1), R.Tensor((32, 32), dtype="float32"))
-                lv4 = R.call_dps_packed("bias_add", (lv3, bias1), R.Tensor((32, 32), dtype="float32"))
-                lv5 = R.call_dps_packed("my_relu", (lv4), R.Tensor((32, 32), dtype="float32"))
-                lv6 = R.call_dps_packed("concat", (lv2, lv5), R.Tensor((32, 64), dtype="float32"))
+                lv0 = R.call_dps_packed(
+                    "conv1x1", (x, w0), R.Tensor((32, 32), dtype="float32")
+                )
+                lv1 = R.call_dps_packed(
+                    "bias_add", (lv0, bias0), R.Tensor((32, 32), dtype="float32")
+                )
+                lv2 = R.call_dps_packed(
+                    "my_relu", (lv1), R.Tensor((32, 32), dtype="float32")
+                )
+                lv3 = R.call_dps_packed(
+                    "conv1x1", (x, w1), R.Tensor((32, 32), dtype="float32")
+                )
+                lv4 = R.call_dps_packed(
+                    "bias_add", (lv3, bias1), R.Tensor((32, 32), dtype="float32")
+                )
+                lv5 = R.call_dps_packed(
+                    "my_relu", (lv4), R.Tensor((32, 32), dtype="float32")
+                )
+                lv6 = R.call_dps_packed(
+                    "concat", (lv2, lv5), R.Tensor((32, 64), dtype="float32")
+                )
                 R.output(lv6)
             return lv6
 
@@ -64,7 +78,7 @@ def test_qkv():
             x: R.Tensor((2, 1024, 640), "float32"),
             w0: R.Tensor((640, 640), "float32"),
             w1: R.Tensor((640, 640), "float32"),
-            w2: R.Tensor((640, 640),"float32"),
+            w2: R.Tensor((640, 640), "float32"),
         ) -> R.Tensor:
             with R.dataflow():
                 lv0 = R.matmul(x, w0)
@@ -91,7 +105,7 @@ def test_qkv():
         assert out[K_weight_pat].name_hint == "w1"
         assert out[V_weight_pat].name_hint == "w2"
 
-        def rewriter(builder, matchings):
+        def rewriter(matchings):
             inp = matchings[inp_pat]
             Q_weight = matchings[Q_weight_pat]
             K_weight = matchings[K_weight_pat]
@@ -100,33 +114,13 @@ def test_qkv():
 
             concat = R.concat([Q_weight, K_weight, V_weight], axis=1)
             matmul = R.matmul(inp, concat)
-            Q = builder.normalize(R.strided_slice(matmul, axes=[2], begin=[0], end=[width]))
-            K = builder.normalize(R.strided_slice(matmul, axes=[2], begin=[width], end=[width*2]))
-            V = builder.normalize(R.strided_slice(matmul, axes=[2], begin=[width*2], end=[width*3]))
+            Q = R.strided_slice(matmul, axes=[2], begin=[0], end=[width])
+            K = R.strided_slice(matmul, axes=[2], begin=[width], end=[width * 2])
+            V = R.strided_slice(matmul, axes=[2], begin=[width * 2], end=[width * 3])
 
-            print(Q.struct_info)
-
-            Q_var = relax.Var("Q")
-            K_var = relax.Var("K")
-            V_var = relax.Var("V")
-
-            return {matchings[matmul1]: Q,
-                    matchings[matmul2]: K,
-                    matchings[matmul3]: V}
-
-            # dfb_writer.add(concat, "concat")
-            # dfb_writer.add(matmul, "matmul")
-
-            # dfb_writer.add(relax.VarBinding(Q_var, Q))
-            # dfb_writer.add(relax.VarBinding(K_var, K))
-            # dfb_writer.add(relax.VarBinding(V_var, V))
-
-            # dfb.replace_all_uses(matchings[matmul1], Q_var)
-            # dfb.replace_all_uses(matchings[matmul2], K_var)
-            # dfb.replace_all_uses(matchings[matmul3], V_var)
+            return {matchings[matmul1]: Q, matchings[matmul2]: K, matchings[matmul3]: V}
 
         print(rewrite_bindings(ctx, rewriter, QKV_proj["main"]))
-
 
 
 def test_CBR_x2_op():
