@@ -85,13 +85,18 @@ def test_qkv():
             w5: R.Tensor((640, 640), "float32"),
         ) -> R.Tensor:
             with R.dataflow():
-                lv0 = R.matmul(x1, w0)
-                lv1 = R.matmul(x1, w1)
-                lv2 = R.matmul(x1, w2)
-                lv3 = R.matmul(x2, w3)
-                lv4 = R.matmul(x2, w4)
-                lv5 = R.matmul(x2, w5)
-                out = (lv0, lv1, lv2, lv3, lv4, lv5)
+                w0_t = R.permute_dims(w0, axes=None)
+                lv0 = R.matmul(x1, w0_t)
+                w1_t = R.permute_dims(w1, axes=None)
+                w1_t_t = R.permute_dims(w1_t, axes=None)
+                lv1 = R.matmul(x1, w1_t_t)
+                w2_t = R.permute_dims(w2, axes=None)
+                lv2 = R.matmul(x1, w2_t)
+                # lv3 = R.matmul(x2, w3)
+                # lv4 = R.matmul(x2, w4)
+                # lv5 = R.matmul(x2, w5)
+                # out = (lv0, lv1, lv2, lv3, lv4, lv5)
+                out = (lv0, lv1, lv2)
                 R.output(out)
             return out
 

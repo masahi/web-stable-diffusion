@@ -3,7 +3,7 @@ from tvm import relax
 from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
 from tvm.relax.dpl import rewrite_call, rewrite_bindings, is_op, wildcard, is_const, PatternContext
 from tvm.script import relax as R
-from tvm.relax.transform import ConvertLayout, Normalize, ToMixedPrecision
+from tvm.relax.transform import ConvertLayout, Normalize, ToMixedPrecision, EliminateCommonSubexpr, CanonicalizeBindings
 
 
 def rewrite_attention(f):
@@ -34,20 +34,19 @@ def rewrite_attention(f):
     return rewrite_call(pattern, callback, f)
 
 
-def combine_parallel_matmul(f, num_branches):
+def combine_parallel_matmul(f, num_branches, slice_axis=2):
     with PatternContext() as ctx:
         inp_pat = wildcard()
 
         weight_patterns = []
         matmul_patterns = []
 
-        for i in range(num_branches):
+        for _ in range(num_branches):
             w_pat = wildcard()
             weight_patterns.append(w_pat)
             matmul_patterns.append(is_op("relax.matmul")(inp_pat, w_pat))
 
     def rewriter(matchings):
-        print(matchings)
         inp = matchings[inp_pat]
 
         weights = [matchings[w_pat] for w_pat in weight_patterns]
@@ -60,7 +59,7 @@ def combine_parallel_matmul(f, num_branches):
         for i, matmul_pat in enumerate(matmul_patterns):
             width = weights[i].struct_info.shape[1]
             bound_var = matchings[matmul_pat]
-            replacements[bound_var] = R.strided_slice(matmul, axes=[2], begin=[begin], end=[begin + width])
+            replacements[bound_var] = R.strided_slice(matmul, axes=[slice_axis], begin=[begin], end=[begin + width])
             begin += width
 
         return replacements
@@ -94,13 +93,16 @@ with open("unet.json", "r") as fi:
     mod_tmp = tvm.ir.load_json(fi.read())
 
 mod = tvm.IRModule()
-mod["main"] = rewrite_attention(mod_tmp["unet"])
+mod["main"] = mod_tmp["unet"]
+mod = EliminateCommonSubexpr()(mod)
+mod = CanonicalizeBindings()(mod)
+mod["main"] = rewrite_attention(mod["main"])
 mod["main"] = combine_parallel_matmul(mod["main"], 32)
+mod["main"] = combine_parallel_matmul(mod["main"], 22, slice_axis=1)
 mod["main"] = rewrite_qkv_proj(mod["main"])
-#mod["main"] = simplify_div(mod["main"])
-# mod = ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]})(mod)
-# mod = Normalize()(mod)
-# # mod = ToMixedPrecision(out_dtype="float16")(mod)
+mod["main"] = simplify_div(mod["main"])
+mod = ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]})(mod)
+# mod = ToMixedPrecision(out_dtype="float16")(mod)
 
-# mod = partition_for_cutlass(mod)
+mod = partition_for_cutlass(mod)
 print(mod)
