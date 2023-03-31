@@ -106,7 +106,6 @@ def test_qkv():
         matmul3 = is_op("relax.matmul")(inp_pat, V_weight_pat)
 
         def rewriter(matchings):
-            print(matchings)
             inp = matchings[inp_pat]
             Q_weight = matchings[Q_weight_pat]
             K_weight = matchings[K_weight_pat]
