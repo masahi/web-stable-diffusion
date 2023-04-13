@@ -65,48 +65,54 @@ def simplify_div(f):
     return rewrite_call(pattern, callback, f)
 
 
-def run_opt_passes(mod, params):
-    mod["main"] = rewrite_attention(mod["main"])
-    mod["main"] = simplify_div(mod["main"])
+def run_opt_passes(mod):
+    return tvm.transform.Sequential(
+        [
+            relax.transform.EliminateCommonSubexpr(),
+            relax.transform.CanonicalizeBindings(),
+            # relax.transform.CombineParallelMatmul(),
+            relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
+            relax.transform.ToMixedPrecision(out_dtype="float16"),
+        ]
+    )(mod)
 
-    return tvm.transform.Sequential([
-        relax.transform.EliminateCommonSubexpr(),
-        relax.transform.CanonicalizeBindings(),
-        relax.transform.CombineParallelMatmul(),
-        relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
-        relax.transform.ToMixedPrecision(out_dtype="float16"),
-    ])(mod)
 
+def get_lower_passes(params):
+    return tvm.transform.Sequential(
+        [
+            relax.transform.BindParams("main", params),
+            relax.pipeline.get_pipeline(),
+            tir.transform.DefaultGPUSchedule(),
+        ]
+    )
 
-# mod_clip, params_clip = deserialize("clip")
-# mod_dec, params_dec = deserialize("vae")
-mod_unet, params_unet = deserialize("unet")
+def get_result(mod, target, dev, inputs):
+    ex = relax.build(mod, target)
+    vm = relax.VirtualMachine(ex, dev)
+    out = vm["main"](*inputs)
 
-# mod_clip = run_opt_passes(mod_clip, params_clip)
-# mod_dec = run_opt_passes(mod_dec, params_dec)
-mod_unet = run_opt_passes(mod_unet, params_unet)
-mod_unet = partition_for_cutlass(mod_unet)
+    return out.numpy()
 
-target = tvm.target.Target("nvidia/geforce-rtx-3070")
-
-with target:
-    mod_unet = tvm.transform.Sequential([
-        relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}}),
-        relax.transform.BindParams("main", params_unet),
-        relax.pipeline.get_pipeline(),
-        tir.transform.DefaultGPUSchedule(),
-        ])(mod_unet)
-
-# print(mod_unet)
 
 dev = tvm.device("cuda", 0)
-ex = relax.build(mod_unet, target)
-vm = relax.VirtualMachine(ex, dev)
-f = vm["main"]
-
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
 inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
+target = tvm.target.Target("nvidia/geforce-rtx-3070")
 
-out = f(inp_0, inp_1, inp_2)
-print(out.numpy())
+mod, params = deserialize("unet")
+mod["main"] = rewrite_attention(mod["main"])
+mod["main"] = simplify_div(mod["main"])
+
+
+mod = run_opt_passes(mod)
+mod = partition_for_cutlass(mod)
+mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})
+
+# print(mod)
+
+with target:
+    mod = get_lower_passes(params)(mod)
+
+out = get_result(mod, target, dev, [inp_0, inp_1, inp_2])
+print(out)
