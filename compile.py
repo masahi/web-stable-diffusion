@@ -74,23 +74,22 @@ def run_opt_passes(mod, params):
         relax.transform.CanonicalizeBindings(),
         relax.transform.CombineParallelMatmul(),
         relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
-        # ToMixedPrecision(out_dtype="float16"),
-        relax.transform.BindParams("main", params),
-        # relax.pipeline.get_pipeline(),
-        relax.transform.LegalizeOps(),
-        relax.transform.AnnotateTIROpPattern(),
-        relax.transform.FoldConstant(),
-        relax.transform.FuseOps(),
-        relax.transform.FuseTIR(),
+        relax.transform.ToMixedPrecision(out_dtype="float16"),
     ])(mod)
 
 
-mod_clip, params_clip = deserialize("clip")
+# mod_clip, params_clip = deserialize("clip")
+# mod_dec, params_dec = deserialize("vae")
 mod_unet, params_unet = deserialize("unet")
-mod_dec, params_dec = deserialize("vae")
 
 # mod_clip = run_opt_passes(mod_clip, params_clip)
-# mod_unet = run_opt_passes(mod_unet, params_unet)
-mod_dec = run_opt_passes(mod_dec, params_dec)
+# mod_dec = run_opt_passes(mod_dec, params_dec)
+mod_unet = run_opt_passes(mod_unet, params_unet)
+mod_unet = partition_for_cutlass(mod_unet)
 
-print(mod_dec)
+mod_unet = tvm.transform.Sequential([
+    relax.transform.BindParams("main", params_unet),
+    relax.pipeline.get_pipeline()
+    ])(mod_unet)
+
+print(mod_unet)
