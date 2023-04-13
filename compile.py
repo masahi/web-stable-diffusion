@@ -70,7 +70,7 @@ def run_opt_passes(mod):
         [
             relax.transform.EliminateCommonSubexpr(),
             relax.transform.CanonicalizeBindings(),
-            # relax.transform.CombineParallelMatmul(),
+            relax.transform.CombineParallelMatmul(),
             relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
             relax.transform.ToMixedPrecision(out_dtype="float16"),
         ]
@@ -86,33 +86,52 @@ def get_lower_passes(params):
         ]
     )
 
-def get_result(mod, target, dev, inputs):
+def get_result(mod, target, dev, inputs, time_eval=False):
     ex = relax.build(mod, target)
     vm = relax.VirtualMachine(ex, dev)
     out = vm["main"](*inputs)
 
+    if time_eval:
+        vm.set_input("main", *inputs)
+        print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
+
     return out.numpy()
+
+
+def get_ref(mod, params, target, dev, inputs):
+    mod = tvm.transform.Sequential(
+        [
+            relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
+            relax.transform.ToMixedPrecision(out_dtype="float16"),
+        ]
+    )(mod)
+
+    with target:
+        mod = get_lower_passes(params)(mod)
+
+    return get_result(mod, target, dev, inputs)
 
 
 dev = tvm.device("cuda", 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
 inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
+inputs = [inp_0, inp_1, inp_2]
 target = tvm.target.Target("nvidia/geforce-rtx-3070")
 
 mod, params = deserialize("unet")
 mod["main"] = rewrite_attention(mod["main"])
 mod["main"] = simplify_div(mod["main"])
 
+ref = get_ref(mod, params, target, dev, inputs)
 
 mod = run_opt_passes(mod)
 mod = partition_for_cutlass(mod)
-mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})
-
-# print(mod)
+mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": False}})(mod)
 
 with target:
     mod = get_lower_passes(params)(mod)
 
-out = get_result(mod, target, dev, [inp_0, inp_1, inp_2])
-print(out)
+out = get_result(mod, target, dev, inputs, time_eval=True)
+
+print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
