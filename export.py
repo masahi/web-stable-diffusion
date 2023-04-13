@@ -19,7 +19,7 @@ def serialize(mod, params, prefix):
 
 pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 clip, params_clip = detach_params(trace.clip_to_text_embeddings(pipe))
-unet, params_unet = detach_params(trace.unet_latents_to_noise_pred(pipe, "mps"))
+unet, params_unet = detach_params(trace.unet_latents_to_noise_pred(pipe, "cuda"))
 vae, params_vae = detach_params(trace.vae_to_image(pipe))
 
 serialize(clip, params_clip, "clip")

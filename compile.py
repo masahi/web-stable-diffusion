@@ -1,7 +1,7 @@
-from diffusers import StableDiffusionPipeline
+import numpy as np
 
 import tvm
-from tvm import relax
+from tvm import relax, tir
 from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
 from tvm.relax.dpl import rewrite_call, is_op, wildcard, is_const
 from tvm.script import relax as R
@@ -87,9 +87,26 @@ mod_unet, params_unet = deserialize("unet")
 mod_unet = run_opt_passes(mod_unet, params_unet)
 mod_unet = partition_for_cutlass(mod_unet)
 
-mod_unet = tvm.transform.Sequential([
-    relax.transform.BindParams("main", params_unet),
-    relax.pipeline.get_pipeline()
-    ])(mod_unet)
+target = tvm.target.Target("nvidia/geforce-rtx-3070")
 
-print(mod_unet)
+with target:
+    mod_unet = tvm.transform.Sequential([
+        relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}}),
+        relax.transform.BindParams("main", params_unet),
+        relax.pipeline.get_pipeline(),
+        tir.transform.DefaultGPUSchedule(),
+        ])(mod_unet)
+
+# print(mod_unet)
+
+dev = tvm.device("cuda", 0)
+ex = relax.build(mod_unet, target)
+vm = relax.VirtualMachine(ex, dev)
+f = vm["main"]
+
+inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
+inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
+inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
+
+out = f(inp_0, inp_1, inp_2)
+print(out.numpy())
