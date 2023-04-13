@@ -127,11 +127,12 @@ ref = get_ref(mod, params, target, dev, inputs)
 
 mod = run_opt_passes(mod)
 mod = partition_for_cutlass(mod)
-mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": False}})(mod)
+mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
 
 with target:
     mod = get_lower_passes(params)(mod)
 
-out = get_result(mod, target, dev, inputs, time_eval=True)
+out = get_result(mod, target, dev, inputs, time_eval=False)
 
 print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
+print(out)
