@@ -65,12 +65,53 @@ def simplify_div(f):
     return rewrite_call(pattern, callback, f)
 
 
+def rewrite_qkv_proj(f):
+    def matmul_transposed_reshape(tensor, weight_transposed):
+        return is_op("relax.reshape")(is_op("relax.matmul")(tensor, weight_transposed), wildcard())
+
+    inp_pat = wildcard()
+    Q_weight_pat = wildcard()
+    K_weight_pat = wildcard()
+    V_weight_pat = wildcard()
+
+    Q = matmul_transposed_reshape(inp_pat, Q_weight_pat)
+    K = matmul_transposed_reshape(inp_pat, K_weight_pat)
+    V = matmul_transposed_reshape(inp_pat, V_weight_pat)
+
+    pattern = is_op("relax.nn.attention")(Q, K, V)
+
+    def rewriter(_, matchings):
+        inp = matchings[inp_pat]
+        Q_weight = matchings[Q_weight_pat]
+        K_weight = matchings[K_weight_pat]
+        V_weight = matchings[V_weight_pat]
+
+        width = Q_weight.struct_info.shape[1]
+        weight_concat = R.concat([Q_weight, K_weight, V_weight], axis=1)
+        matmul = R.matmul(inp, weight_concat)
+        Q = R.strided_slice(matmul, axes=[2], begin=[0], end=[width])
+        K = R.strided_slice(matmul, axes=[2], begin=[width], end=[width*2])
+        V = R.strided_slice(matmul, axes=[2], begin=[width*2], end=[width*3])
+
+        num_head = 8
+        hidden = width // num_head
+        seq_len = inp.struct_info.shape[1]
+
+        Q = R.reshape(Q, R.shape([2, seq_len, num_head, hidden]))
+        K = R.reshape(K, R.shape([2, seq_len, num_head, hidden]))
+        V = R.reshape(V, R.shape([2, seq_len, num_head, hidden]))
+
+        return R.nn.attention(Q, K, V)
+
+    return rewrite_call(pattern, rewriter, f)
+
+
 def run_opt_passes(mod):
     return tvm.transform.Sequential(
         [
-            relax.transform.EliminateCommonSubexpr(),
-            relax.transform.CanonicalizeBindings(),
-            relax.transform.CombineParallelMatmul(),
+            # relax.transform.EliminateCommonSubexpr(),
+            # relax.transform.CanonicalizeBindings(),
+            # relax.transform.CombineParallelMatmul(),
             relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
             relax.transform.ToMixedPrecision(out_dtype="float16"),
         ]
@@ -111,27 +152,28 @@ def get_ref(mod, params, target, dev, inputs):
 
     return get_result(mod, target, dev, inputs)
 
+mod, params = deserialize("unet")
+
+mod["main"] = rewrite_attention(mod["main"])
+mod["main"] = simplify_div(mod["main"])
+mod["main"] = rewrite_qkv_proj(mod["main"])
+
+mod = run_opt_passes(mod)
+
+mod = partition_for_cutlass(mod)
+mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
+
+target = tvm.target.Target("nvidia/geforce-rtx-3070")
+with target:
+    mod = get_lower_passes(params)(mod)
 
 dev = tvm.device("cuda", 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
 inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
 inputs = [inp_0, inp_1, inp_2]
-target = tvm.target.Target("nvidia/geforce-rtx-3070")
-
-mod, params = deserialize("unet")
-mod["main"] = rewrite_attention(mod["main"])
-mod["main"] = simplify_div(mod["main"])
 
 ref = get_ref(mod, params, target, dev, inputs)
-
-mod = run_opt_passes(mod)
-mod = partition_for_cutlass(mod)
-mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
-
-with target:
-    mod = get_lower_passes(params)(mod)
-
 out = get_result(mod, target, dev, inputs, time_eval=False)
 
 print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
