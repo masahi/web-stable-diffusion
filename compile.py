@@ -3,7 +3,7 @@ import numpy as np
 import tvm
 from tvm import relax, tir
 from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
-from tvm.relax.dpl import rewrite_call, is_op, wildcard, is_const
+from tvm.relax.dpl import rewrite_call, is_op, wildcard, is_const, PatternContext, rewrite_bindings
 from tvm.script import relax as R
 
 
@@ -106,6 +106,46 @@ def rewrite_qkv_proj(f):
     return rewrite_call(pattern, rewriter, f)
 
 
+def combine_parallel_matmul(f, num_branches, slice_axis=2):
+    with PatternContext() as ctx:
+        inp_pat = wildcard()
+
+        weight_patterns = []
+        matmul_patterns = []
+
+        for _ in range(num_branches):
+            w_pat = wildcard()
+            weight_patterns.append(w_pat)
+            matmul_patterns.append(is_op("relax.matmul")(inp_pat, w_pat))
+
+    def rewriter(matchings):
+        inp = matchings[inp_pat]
+
+        weights = [matchings[w_pat] for w_pat in weight_patterns]
+        concat = R.concat(weights, axis=1)
+        matmul = R.matmul(inp, concat)
+
+        begin = 0
+        replacements = {}
+
+        sections = []
+        ind = 0
+        for i, matmul_pat in enumerate(matmul_patterns[:-1]):
+            width = weights[i].struct_info.shape[1]
+            ind += width
+            sections.append(int(ind))
+
+        chunks = R.split(matmul, sections, slice_axis)
+
+        for i, matmul_pat in enumerate(matmul_patterns):
+            bound_var = matchings[matmul_pat]
+            replacements[bound_var] = chunks[i]
+
+        return replacements
+
+    return rewrite_bindings(ctx, rewriter, f)
+
+
 def run_opt_passes(mod):
     return tvm.transform.Sequential(
         [
@@ -156,25 +196,35 @@ mod, params = deserialize("unet")
 
 mod["main"] = rewrite_attention(mod["main"])
 mod["main"] = simplify_div(mod["main"])
-mod["main"] = rewrite_qkv_proj(mod["main"])
 
-mod = run_opt_passes(mod)
+mod = relax.transform.EliminateCommonSubexpr()(mod)
+mod = relax.transform.CanonicalizeBindings()(mod)
+mod = relax.transform.CombineParallelMatmul()(mod)
 
-mod = partition_for_cutlass(mod)
-mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
+# mod["main"] = combine_parallel_matmul(mod["main"], 32)
+# mod["main"] = combine_parallel_matmul(mod["main"], 22, slice_axis=1)
+# mod["main"] = combine_parallel_matmul(mod["main"], 3)
+# mod["main"] = combine_parallel_matmul(mod["main"], 2)
 
-target = tvm.target.Target("nvidia/geforce-rtx-3070")
-with target:
-    mod = get_lower_passes(params)(mod)
+print(mod)
 
-dev = tvm.device("cuda", 0)
-inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
-inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
-inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
-inputs = [inp_0, inp_1, inp_2]
+# mod = run_opt_passes(mod)
 
-ref = get_ref(mod, params, target, dev, inputs)
-out = get_result(mod, target, dev, inputs, time_eval=False)
+# mod = partition_for_cutlass(mod)
+# mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
 
-print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
-print(out)
+# target = tvm.target.Target("nvidia/geforce-rtx-3070")
+# with target:
+#     mod = get_lower_passes(params)(mod)
+
+# dev = tvm.device("cuda", 0)
+# inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
+# inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
+# inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
+# inputs = [inp_0, inp_1, inp_2]
+
+# ref = get_ref(mod, params, target, dev, inputs)
+# out = get_result(mod, target, dev, inputs, time_eval=False)
+
+# print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
+# print(out)
