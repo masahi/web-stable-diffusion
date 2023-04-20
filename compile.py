@@ -68,28 +68,33 @@ def simplify_div(f):
 def run_opt_passes(mod):
     return tvm.transform.Sequential(
         [
-            relax.transform.EliminateCommonSubexpr(),
-            relax.transform.CanonicalizeBindings(),
-            relax.transform.CombineParallelMatmul(),
+            # relax.transform.EliminateCommonSubexpr(),
+            # relax.transform.CanonicalizeBindings(),
+            # relax.transform.CombineParallelMatmul(),
             relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
+            relax.transform.BindParams("main", params),
+            relax.transform.FoldConstant(),
             relax.transform.ToMixedPrecision(out_dtype="float16"),
-            # relax.transform.LegalizeOps(),
-            # relax.transform.AnnotateTIROpPattern(),
-            # relax.transform.FoldConstant(),
-            # relax.transform.FuseOps(),
-            # relax.transform.FuseTIR(),
         ]
     )(mod)
 
 
-def get_lower_passes(params):
-    return tvm.transform.Sequential(
-        [
-            relax.transform.BindParams("main", params),
-            relax.pipeline.get_pipeline(),
-            tir.transform.DefaultGPUSchedule(),
-        ]
-    )
+def get_lower_passes(tune=False):
+    passes = [relax.pipeline.get_pipeline()]
+
+    if not tune:
+        passes.append(tir.transform.DefaultGPUSchedule())
+    else:
+        work_dir = "work"
+        passes.append(relax.transform.MetaScheduleTuneIRMod(
+            params={},
+            work_dir=work_dir,
+            max_trials_global=100,
+        ))
+        passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
+
+    return tvm.transform.Sequential(passes)
+
 
 def get_result(mod, target, dev, inputs, time_eval=False):
     ex = relax.build(mod, target)
@@ -97,7 +102,7 @@ def get_result(mod, target, dev, inputs, time_eval=False):
     out = vm["main"](*inputs)
 
     if time_eval:
-        print(vm.profile("main", *inputs))
+        # print(vm.profile("main", *inputs))
         vm.set_input("main", *inputs)
         print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
@@ -108,25 +113,34 @@ def get_ref(mod, params, target, dev, inputs):
     mod = tvm.transform.Sequential(
         [
             relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
+            relax.transform.BindParams("main", params),
+            relax.transform.FoldConstant(),
             relax.transform.ToMixedPrecision(out_dtype="float16"),
         ]
     )(mod)
 
     with target:
-        mod = get_lower_passes(params)(mod)
+        mod = get_lower_passes()(mod)
 
     return get_result(mod, target, dev, inputs)
 
 
 target = tvm.target.Target("nvidia/geforce-rtx-3070")
 
+model = "vae"
 dev = tvm.device("cuda", 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
 inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
-inputs = [inp_0, inp_1, inp_2]
 
-mod, params = deserialize("unet")
+if model == "unet":
+    inputs = [inp_0, inp_1, inp_2]
+elif model == "vae":
+    inputs = [inp_0]
+else:
+    assert False
+
+mod, params = deserialize(model)
 
 mod["main"] = rewrite_attention(mod["main"])
 mod["main"] = simplify_div(mod["main"])
@@ -136,13 +150,11 @@ ref = get_ref(mod, params, target, dev, inputs)
 mod = run_opt_passes(mod)
 
 mod = partition_for_cutlass(mod)
-# print(mod)
 mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
 
 with target:
-    mod = get_lower_passes(params)(mod)
+    mod = get_lower_passes(tune=False)(mod)
 
 out = get_result(mod, target, dev, inputs, time_eval=True)
 
-print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
-# # print(out)
+# print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
