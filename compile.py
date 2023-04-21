@@ -5,6 +5,7 @@ from tvm import relax, tir
 from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
 from tvm.relax.dpl import rewrite_call, is_op, wildcard, is_const
 from tvm.script import relax as R
+from tvm.relax.transform.tuning_api import Trace
 
 
 def deserialize(prefix):
@@ -79,21 +80,24 @@ def run_opt_passes(mod):
     )(mod)
 
 
-def get_lower_passes(tune=False):
+def run_lower_passes(mod, target, tune=False):
     passes = [relax.pipeline.get_pipeline()]
 
     if not tune:
         passes.append(tir.transform.DefaultGPUSchedule())
     else:
         work_dir = "work"
-        passes.append(relax.transform.MetaScheduleTuneIRMod(
-            params={},
-            work_dir=work_dir,
-            max_trials_global=100,
-        ))
-        passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
+        with target:
+            # passes.append(relax.transform.MetaScheduleTuneIRMod(
+            #     params={},
+            #     work_dir=work_dir,
+            #     max_trials_global=1300,
+            # ))
+            passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
 
-    return tvm.transform.Sequential(passes)
+    # with target, tvm.transform.PassContext(trace=Trace(mod), opt_level=0):
+    with target, tvm.transform.PassContext(opt_level=3):
+        return tvm.transform.Sequential(passes)(mod)
 
 
 def get_result(mod, target, dev, inputs, time_eval=False):
@@ -102,9 +106,9 @@ def get_result(mod, target, dev, inputs, time_eval=False):
     out = vm["main"](*inputs)
 
     if time_eval:
-        # print(vm.profile("main", *inputs))
-        vm.set_input("main", *inputs)
-        print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
+        print(vm.profile("main", *inputs))
+        # vm.set_input("main", *inputs)
+        # print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
     return out.numpy()
 
@@ -119,15 +123,13 @@ def get_ref(mod, params, target, dev, inputs):
         ]
     )(mod)
 
-    with target:
-        mod = get_lower_passes()(mod)
-
+    mod = run_lower_passes(mod, target)
     return get_result(mod, target, dev, inputs)
 
 
 target = tvm.target.Target("nvidia/geforce-rtx-3070")
 
-model = "vae"
+model = "unet"
 dev = tvm.device("cuda", 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
@@ -150,11 +152,12 @@ ref = get_ref(mod, params, target, dev, inputs)
 mod = run_opt_passes(mod)
 
 mod = partition_for_cutlass(mod)
+# print(mod)
+
 mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
 
-with target:
-    mod = get_lower_passes(tune=False)(mod)
+mod = run_lower_passes(mod, target, tune=True)
 
 out = get_result(mod, target, dev, inputs, time_eval=True)
 
-# print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
+print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
