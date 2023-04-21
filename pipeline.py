@@ -1,7 +1,176 @@
+import torch
 import numpy as np
+
+import time
+import inspect
+from typing import List, Optional, Union
 
 import tvm
 from tvm import relax
+
+from diffusers import LMSDiscreteScheduler, StableDiffusionPipeline
+from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
+
+
+class StableDiffusionTVMPipeline:
+    def __init__(
+        self,
+        original_pipe,
+        text_encoder,
+        unet,
+        vae,
+    ):
+        self.original_pipe = original_pipe
+        self.clip = text_encoder
+        self.vae = vae
+        self.unet = unet
+        self.tokenizer = self.original_pipe.tokenizer
+        self.scheduler = self.original_pipe.scheduler
+        self.safety_checker = self.original_pipe.safety_checker
+
+    def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
+        pass
+
+    def clip_inference(self, input_ids):
+        pass
+
+    def vae_inference(self, vae_input):
+        pass
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        prompt: Union[str, List[str]],
+        height: Optional[int] = 512,
+        width: Optional[int] = 512,
+        num_inference_steps: Optional[int] = 50,
+        guidance_scale: Optional[float] = 7.5,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        eta: Optional[float] = 0.0,
+        generator: Optional[torch.Generator] = None,
+        latents: Optional[torch.FloatTensor] = None,
+        output_type: Optional[str] = "pil",
+        return_dict: bool = True,
+        **kwargs,
+    ):
+        batch_size = 1
+        assert height == 512 and width == 512
+
+        # get prompt text embeddings
+        text_input = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=64,  # self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_embeddings = self.clip_inference(text_input.input_ids.to("cuda"))
+
+        assert do_classifier_free_guidance, "Not implemeted"
+
+        # get unconditional embeddings for classifier free guidance
+        if do_classifier_free_guidance:
+            uncond_tokens: List[str]
+            max_length = text_input.input_ids.shape[-1]
+            if negative_prompt is None:
+                uncond_tokens = [""] * batch_size
+            elif type(prompt) is not type(negative_prompt):
+                raise TypeError(
+                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
+                    f" {type(prompt)}."
+                )
+            elif isinstance(negative_prompt, str):
+                uncond_tokens = [negative_prompt]
+            elif batch_size != len(negative_prompt):
+                raise ValueError(
+                    f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
+                    f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
+                    " the batch size of `prompt`."
+                )
+            else:
+                uncond_tokens = negative_prompt
+            uncond_input = self.tokenizer(
+                uncond_tokens,
+                padding="max_length",
+                max_length=max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            uncond_embeddings = self.clip_inference(uncond_input.input_ids.to("cuda"))
+
+            # For classifier free guidance, we need to do two forward passes.
+            # Here we concatenate the unconditional and text embeddings into a single batch
+            # to avoid doing two forward passes
+            text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+
+        latents = torch.randn(
+            (1, 4, 64, 64),
+            generator=generator,
+            device="cuda",
+        )
+
+        # set timesteps
+        accepts_offset = "offset" in set(
+            inspect.signature(self.scheduler.set_timesteps).parameters.keys()
+        )
+        extra_set_kwargs = {}
+        if accepts_offset:
+            extra_set_kwargs["offset"] = 1
+
+        self.scheduler.set_timesteps(num_inference_steps, **extra_set_kwargs)
+
+        latents = latents * self.scheduler.init_noise_sigma
+
+        # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
+        # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
+        # eta corresponds to η in DDIM paper: https://arxiv.org/abs/2010.02502
+        # and should be between [0, 1]
+        accepts_eta = "eta" in set(
+            inspect.signature(self.scheduler.step).parameters.keys()
+        )
+        extra_step_kwargs = {}
+        if accepts_eta:
+            extra_step_kwargs["eta"] = eta
+            # check if the scheduler accepts generator
+        accepts_generator = "generator" in set(
+            inspect.signature(self.scheduler.step).parameters.keys()
+        )
+        if accepts_generator:
+            extra_step_kwargs["generator"] = generator
+
+        assert not isinstance(self.scheduler, LMSDiscreteScheduler)
+
+        for i, t in enumerate(
+            self.original_pipe.progress_bar(self.scheduler.timesteps)
+        ):
+            # predict the noise residual
+            noise_pred = self.unet_inference(
+                latents, t, encoder_hidden_states=text_embeddings
+            )
+
+            latents = self.scheduler.step(
+                noise_pred, t, latents, **extra_step_kwargs
+            ).prev_sample
+
+        image = self.vae_inference(latents)
+
+        # run safety checker
+        if self.safety_checker is not None:
+            safety_checker_input = self.original_pipe.feature_extractor(
+                self.original_pipe.numpy_to_pil(image), return_tensors="pt"
+            ).to("cuda")
+            image, has_nsfw_concept = self.safety_checker(
+                images=image, clip_input=safety_checker_input.pixel_values
+            )
+        else:
+            has_nsfw_concept = None
+
+        if not return_dict:
+            return (image, has_nsfw_concept)
+
+        return StableDiffusionPipelineOutput(
+            images=image, nsfw_content_detected=has_nsfw_concept
+        )
 
 
 def get_result(ex, dev, inputs, time_eval=False):
@@ -9,15 +178,17 @@ def get_result(ex, dev, inputs, time_eval=False):
     out = vm["main"](*inputs)
 
     if time_eval:
-        print(vm.profile("main", *inputs))
-        # vm.set_input("main", *inputs)
-        # print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
+        # print(vm.profile("main", *inputs))
+
+        vm.set_input("main", *inputs)
+        print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
     return out.numpy()
 
 
 def test(model):
     so_name = "{}.so".format(model)
+    ex = tvm.runtime.load_module(so_name)
 
     target = tvm.target.Target("nvidia/geforce-rtx-3070")
 
@@ -37,9 +208,24 @@ def test(model):
             )
         ]
 
-    ex = tvm.runtime.load_module(so_name)
-
     out = get_result(ex, dev, inputs, time_eval=True)
 
 
-test("vae")
+# test("unet")
+
+pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+
+clip = tvm.runtime.load_module("clip.so")
+unet = tvm.runtime.load_module("unet.so")
+vae = tvm.runtime.load_module("vae.so")
+
+pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
+
+t1 = time.time()
+sample = pipe_tvm("Mt. Fuji in the style of Gauguin", num_inference_steps=50)["images"][
+    0
+]
+t2 = time.time()
+
+sample.save("out.png")
+print(t2 - t1)
