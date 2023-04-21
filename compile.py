@@ -75,7 +75,7 @@ def run_opt_passes(mod):
             relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
             relax.transform.BindParams("main", params),
             relax.transform.FoldConstant(),
-            relax.transform.ToMixedPrecision(out_dtype="float16"),
+            # relax.transform.ToMixedPrecision(out_dtype="float16"),
         ]
     )(mod)
 
@@ -129,7 +129,7 @@ def get_ref(mod, params, target, dev, inputs):
 
 target = tvm.target.Target("nvidia/geforce-rtx-3070")
 
-model = "unet"
+model = "clip"
 dev = tvm.device("cuda", 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
@@ -140,24 +140,26 @@ if model == "unet":
 elif model == "vae":
     inputs = [inp_0]
 else:
-    assert False
+    inputs = [tvm.nd.array(np.random.randn(1, 77).astype("float32"))]
 
 mod, params = deserialize(model)
 
 mod["main"] = rewrite_attention(mod["main"])
 mod["main"] = simplify_div(mod["main"])
 
-ref = get_ref(mod, params, target, dev, inputs)
+# ref = get_ref(mod, params, target, dev, inputs)
 
 mod = run_opt_passes(mod)
 
-mod = partition_for_cutlass(mod)
 # print(mod)
 
-mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
+# mod = partition_for_cutlass(mod)
+# # print(mod)
 
-mod = run_lower_passes(mod, target, tune=True)
+# mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
 
-out = get_result(mod, target, dev, inputs, time_eval=True)
+# mod = run_lower_passes(mod, target, tune=False)
 
-print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
+# out = get_result(mod, target, dev, inputs, time_eval=True)
+
+# print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
