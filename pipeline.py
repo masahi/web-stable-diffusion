@@ -1,4 +1,6 @@
 import torch
+from torch.utils.dlpack import to_dlpack, from_dlpack
+
 import numpy as np
 
 import time
@@ -12,6 +14,10 @@ from diffusers import LMSDiscreteScheduler, StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
 
+def convert_to_ndarray(tensor):
+    return tvm.runtime.ndarray.from_dlpack(to_dlpack(tensor))
+
+
 class StableDiffusionTVMPipeline:
     def __init__(
         self,
@@ -20,22 +26,29 @@ class StableDiffusionTVMPipeline:
         unet,
         vae,
     ):
+        dev = tvm.device("cuda", 0)
+
         self.original_pipe = original_pipe
-        self.clip = text_encoder
-        self.vae = vae
-        self.unet = unet
+        self.clip = relax.VirtualMachine(text_encoder, dev)
+        self.vae = relax.VirtualMachine(vae, dev)
+        self.unet = relax.VirtualMachine(unet, dev)
         self.tokenizer = self.original_pipe.tokenizer
         self.scheduler = self.original_pipe.scheduler
         self.safety_checker = self.original_pipe.safety_checker
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
-        pass
+        out = self.vae["main"](
+            convert_to_ndarray(latent_model_input),
+            convert_to_ndarray(timesteps),
+            convert_to_ndarray(encoder_hidden_states),
+        )
+        return from_dlpack(out)
 
     def clip_inference(self, input_ids):
-        pass
+        return from_dlpack(self.clip["main"](convert_to_ndarray(input_ids)))
 
     def vae_inference(self, vae_input):
-        pass
+        return from_dlpack(self.vae["main"](convert_to_ndarray(vae_input)))
 
     @torch.no_grad()
     def __call__(
@@ -97,10 +110,6 @@ class StableDiffusionTVMPipeline:
                 return_tensors="pt",
             )
             uncond_embeddings = self.clip_inference(uncond_input.input_ids.to("cuda"))
-
-            # For classifier free guidance, we need to do two forward passes.
-            # Here we concatenate the unconditional and text embeddings into a single batch
-            # to avoid doing two forward passes
             text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
 
         latents = torch.randn(
@@ -121,10 +130,6 @@ class StableDiffusionTVMPipeline:
 
         latents = latents * self.scheduler.init_noise_sigma
 
-        # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
-        # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
-        # eta corresponds to η in DDIM paper: https://arxiv.org/abs/2010.02502
-        # and should be between [0, 1]
         accepts_eta = "eta" in set(
             inspect.signature(self.scheduler.step).parameters.keys()
         )
