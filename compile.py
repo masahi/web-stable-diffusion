@@ -75,7 +75,7 @@ def run_opt_passes(mod):
             relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
             relax.transform.BindParams("main", params),
             relax.transform.FoldConstant(),
-            # relax.transform.ToMixedPrecision(out_dtype="float16"),
+            relax.transform.ToMixedPrecision(out_dtype="float16"),
         ]
     )(mod)
 
