@@ -91,17 +91,17 @@ def run_lower_passes(mod, target, tune=False):
             # passes.append(relax.transform.MetaScheduleTuneIRMod(
             #     params={},
             #     work_dir=work_dir,
-            #     max_trials_global=1300,
+            #     max_trials_global=500,
             # ))
             passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
+            passes.append(tir.transform.DefaultGPUSchedule())
 
     # with target, tvm.transform.PassContext(trace=Trace(mod), opt_level=0):
     with target, tvm.transform.PassContext(opt_level=3):
         return tvm.transform.Sequential(passes)(mod)
 
 
-def get_result(mod, target, dev, inputs, time_eval=False):
-    ex = relax.build(mod, target)
+def get_result(ex, dev, inputs, time_eval=False):
     vm = relax.VirtualMachine(ex, dev, profile=True)
     out = vm["main"](*inputs)
 
@@ -124,12 +124,14 @@ def get_ref(mod, params, target, dev, inputs):
     )(mod)
 
     mod = run_lower_passes(mod, target)
-    return get_result(mod, target, dev, inputs)
+    ex = relax.build(mod, target)
+    return get_result(ex, dev, inputs)
 
-model = "clip"
+
+model = "unet"
+so_name = "{}.so".format(model)
 
 target = tvm.target.Target("nvidia/geforce-rtx-3070")
-# target = tvm.target.Target("llvm")
 
 dev = tvm.device(target.kind.name, 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
@@ -141,7 +143,11 @@ if model == "unet":
 elif model == "vae":
     inputs = [inp_0]
 else:
-    inputs = [tvm.nd.array(np.random.randint(low=0, high=1000, size=(1, 77)).astype("int32"))]
+    inputs = [
+        tvm.nd.array(
+            np.random.randint(low=0, high=1000, size=(1, 77)).astype("int32"), dev
+        )
+    ]
 
 mod, params = deserialize(model)
 
@@ -155,8 +161,11 @@ mod = run_opt_passes(mod)
 mod = partition_for_cutlass(mod)
 mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
 
-mod = run_lower_passes(mod, target, tune=False)
+mod = run_lower_passes(mod, target, tune=True)
 
-out = get_result(mod, target, dev, inputs, time_eval=True)
+ex = relax.build(mod, target)
+ex.export_library(so_name)
+
+out = get_result(ex, dev, inputs, time_eval=True)
 
 print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
