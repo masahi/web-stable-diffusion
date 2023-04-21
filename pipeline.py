@@ -43,7 +43,7 @@ class StableDiffusionTVMPipeline:
             # convert_to_ndarray(timesteps),
             # convert_to_ndarray(encoder_hidden_states),
             tvm.nd.array(latent_model_input.cpu().numpy(), self.dev),
-            tvm.nd.array(timesteps.cpu().numpy().astype("int32"), self.dev),
+            tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
             tvm.nd.array(encoder_hidden_states.cpu().numpy(), self.dev),
         )
         return from_dlpack(out)
@@ -59,7 +59,7 @@ class StableDiffusionTVMPipeline:
         # TODO: why it doesn't work
         # inp = convert_to_ndarray(vae_input)
         inp = tvm.nd.array(vae_input.cpu().numpy(), self.dev)
-        return from_dlpack(self.vae["main"](inp))
+        return from_dlpack(self.vae["main"](inp)) / 255
 
     @torch.no_grad()
     def __call__(
@@ -80,7 +80,6 @@ class StableDiffusionTVMPipeline:
         batch_size = 1
         assert height == 512 and width == 512
 
-        # get prompt text embeddings
         text_input = self.tokenizer(
             prompt,
             padding="max_length",
@@ -156,12 +155,11 @@ class StableDiffusionTVMPipeline:
         if accepts_generator:
             extra_step_kwargs["generator"] = generator
 
-        assert not isinstance(self.scheduler, LMSDiscreteScheduler)
+        assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
 
         for i, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
-            # predict the noise residual
             noise_pred = self.unet_inference(
                 latents, t, encoder_hidden_states=text_embeddings
             )
@@ -183,20 +181,7 @@ class StableDiffusionTVMPipeline:
         )
 
 
-def get_result(ex, dev, inputs, time_eval=False):
-    vm = relax.VirtualMachine(ex, dev, profile=True)
-    out = vm["main"](*inputs)
-
-    if time_eval:
-        # print(vm.profile("main", *inputs))
-
-        vm.set_input("main", *inputs)
-        print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
-
-    return out.numpy()
-
-
-def test(model):
+def test(model, time_eval=False):
     so_name = "{}.so".format(model)
     ex = tvm.runtime.load_module(so_name)
 
@@ -218,11 +203,21 @@ def test(model):
             )
         ]
 
-    out = get_result(ex, dev, inputs, time_eval=True)
+    vm = relax.VirtualMachine(ex, dev, profile=True)
+
+    if time_eval:
+        print(vm.profile("main", *inputs))
+
+        vm.set_input("main", *inputs)
+        print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
+
 
 # test("clip")
 
 pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+pipe.safety_checker = None
+# pipe.to("cuda")
+# pipe.enable_xformers_memory_efficient_attention()
 
 clip = tvm.runtime.load_module("clip.so")
 unet = tvm.runtime.load_module("unet.so")
@@ -230,10 +225,10 @@ vae = tvm.runtime.load_module("vae.so")
 
 pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
 
+prompt = "Mt. Fuji in the style of Gauguin"
+
 t1 = time.time()
-sample = pipe_tvm("Mt. Fuji in the style of Gauguin", num_inference_steps=50)["images"][
-    0
-]
+sample = pipe_tvm(prompt, num_inference_steps=50)["images"][0]
 t2 = time.time()
 
 sample.save("out.png")

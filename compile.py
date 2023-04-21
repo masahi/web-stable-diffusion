@@ -35,10 +35,10 @@ def rewrite_attention(f):
     V_3D = BSNH_to_BSH(V)
     K_3D = BSNH_to_BSH(K)
 
-    matmul1 = is_op("relax.matmul")(Q_3D, is_op("relax.permute_dims")(V_3D))
+    matmul1 = is_op("relax.matmul")(Q_3D, is_op("relax.permute_dims")(K_3D))
     multiply = is_op("relax.multiply")(matmul1, is_const())
     softmax = is_op("relax.nn.softmax")(multiply)
-    matmul2 = is_op("relax.matmul")(softmax, K_3D)
+    matmul2 = is_op("relax.matmul")(softmax, V_3D)
 
     pattern = BSH_to_BSNH(matmul2)
 
@@ -116,7 +116,6 @@ def get_result(ex, dev, inputs, time_eval=False):
 def get_ref(mod, params, target, dev, inputs):
     mod = tvm.transform.Sequential(
         [
-            relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
             relax.transform.BindParams("main", params),
             relax.transform.FoldConstant(),
             relax.transform.ToMixedPrecision(out_dtype="float16"),
@@ -128,7 +127,7 @@ def get_ref(mod, params, target, dev, inputs):
     return get_result(ex, dev, inputs)
 
 
-model = "clip"
+model = "unet"
 so_name = "{}.so".format(model)
 
 target = tvm.target.Target("nvidia/geforce-rtx-3070")
@@ -151,10 +150,10 @@ else:
 
 mod, params = deserialize(model)
 
+ref = get_ref(mod, params, target, dev, inputs)
+
 mod["main"] = rewrite_attention(mod["main"])
 mod["main"] = simplify_div(mod["main"])
-
-ref = get_ref(mod, params, target, dev, inputs)
 
 mod = run_opt_passes(mod)
 
@@ -166,6 +165,6 @@ mod = run_lower_passes(mod, target, tune=True)
 ex = relax.build(mod, target)
 ex.export_library(so_name)
 
-out = get_result(ex, dev, inputs, time_eval=True)
+out = get_result(ex, dev, inputs, time_eval=False)
 
 print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
