@@ -26,29 +26,40 @@ class StableDiffusionTVMPipeline:
         unet,
         vae,
     ):
-        dev = tvm.device("cuda", 0)
+        self.dev = tvm.device("cuda", 0)
 
         self.original_pipe = original_pipe
-        self.clip = relax.VirtualMachine(text_encoder, dev)
-        self.vae = relax.VirtualMachine(vae, dev)
-        self.unet = relax.VirtualMachine(unet, dev)
+        self.clip = relax.VirtualMachine(text_encoder, self.dev)
+        self.vae = relax.VirtualMachine(vae, self.dev)
+        self.unet = relax.VirtualMachine(unet, self.dev)
         self.tokenizer = self.original_pipe.tokenizer
         self.scheduler = self.original_pipe.scheduler
         self.safety_checker = self.original_pipe.safety_checker
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
-        out = self.vae["main"](
-            convert_to_ndarray(latent_model_input),
-            convert_to_ndarray(timesteps),
-            convert_to_ndarray(encoder_hidden_states),
+        out = self.unet["main"](
+            # TODO: why it doesn't work
+            # convert_to_ndarray(latent_model_input),
+            # convert_to_ndarray(timesteps),
+            # convert_to_ndarray(encoder_hidden_states),
+            tvm.nd.array(latent_model_input.cpu().numpy(), self.dev),
+            tvm.nd.array(timesteps.cpu().numpy().astype("int32"), self.dev),
+            tvm.nd.array(encoder_hidden_states.cpu().numpy(), self.dev),
         )
         return from_dlpack(out)
 
     def clip_inference(self, input_ids):
-        return from_dlpack(self.clip["main"](convert_to_ndarray(input_ids)))
+        # TODO: why it doesn't work
+        # inp = convert_to_ndarray(input_ids)
+        inp = tvm.nd.array(input_ids.numpy(), self.dev)
+        tvm_out = self.clip["main"](inp)
+        return from_dlpack(tvm_out)
 
     def vae_inference(self, vae_input):
-        return from_dlpack(self.vae["main"](convert_to_ndarray(vae_input)))
+        # TODO: why it doesn't work
+        # inp = convert_to_ndarray(vae_input)
+        inp = tvm.nd.array(vae_input.cpu().numpy(), self.dev)
+        return from_dlpack(self.vae["main"](inp))
 
     @torch.no_grad()
     def __call__(
@@ -73,12 +84,14 @@ class StableDiffusionTVMPipeline:
         text_input = self.tokenizer(
             prompt,
             padding="max_length",
-            max_length=64,  # self.tokenizer.model_max_length,
+            max_length=77,
             truncation=True,
             return_tensors="pt",
         )
-        text_embeddings = self.clip_inference(text_input.input_ids.to("cuda"))
 
+        text_embeddings = self.clip_inference(text_input.input_ids)
+
+        do_classifier_free_guidance = guidance_scale > 1.0
         assert do_classifier_free_guidance, "Not implemeted"
 
         # get unconditional embeddings for classifier free guidance
@@ -109,7 +122,7 @@ class StableDiffusionTVMPipeline:
                 truncation=True,
                 return_tensors="pt",
             )
-            uncond_embeddings = self.clip_inference(uncond_input.input_ids.to("cuda"))
+            uncond_embeddings = self.clip_inference(uncond_input.input_ids)
             text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
 
         latents = torch.randn(
@@ -158,17 +171,9 @@ class StableDiffusionTVMPipeline:
             ).prev_sample
 
         image = self.vae_inference(latents)
+        image = self.original_pipe.numpy_to_pil(image.cpu().numpy())
 
-        # run safety checker
-        if self.safety_checker is not None:
-            safety_checker_input = self.original_pipe.feature_extractor(
-                self.original_pipe.numpy_to_pil(image), return_tensors="pt"
-            ).to("cuda")
-            image, has_nsfw_concept = self.safety_checker(
-                images=image, clip_input=safety_checker_input.pixel_values
-            )
-        else:
-            has_nsfw_concept = None
+        has_nsfw_concept = None
 
         if not return_dict:
             return (image, has_nsfw_concept)
@@ -209,14 +214,13 @@ def test(model):
     else:
         inputs = [
             tvm.nd.array(
-                np.random.randint(low=0, high=1000, size=(1, 77)).astype("int32"), dev
+                np.random.randint(low=0, high=1000, size=(1, 77)).astype("int64"), dev
             )
         ]
 
     out = get_result(ex, dev, inputs, time_eval=True)
 
-
-# test("unet")
+# test("clip")
 
 pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 

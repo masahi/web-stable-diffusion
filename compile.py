@@ -128,7 +128,7 @@ def get_ref(mod, params, target, dev, inputs):
     return get_result(ex, dev, inputs)
 
 
-model = "unet"
+model = "clip"
 so_name = "{}.so".format(model)
 
 target = tvm.target.Target("nvidia/geforce-rtx-3070")
@@ -145,7 +145,7 @@ elif model == "vae":
 else:
     inputs = [
         tvm.nd.array(
-            np.random.randint(low=0, high=1000, size=(1, 77)).astype("int32"), dev
+            np.random.randint(low=0, high=1000, size=(1, 77)).astype("int64"), dev
         )
     ]
 
