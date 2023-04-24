@@ -45,7 +45,6 @@ class StableDiffusionTVMPipeline:
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
         inputs = [
-            # TODO: why it doesn't work
             # convert_to_ndarray(latent_model_input),
             # convert_to_ndarray(timesteps),
             # convert_to_ndarray(encoder_hidden_states),
@@ -60,14 +59,10 @@ class StableDiffusionTVMPipeline:
         return from_dlpack(self.unet["main"](*inputs))
 
     def clip_inference(self, input_ids):
-        # TODO: why it doesn't work
-        # inp = convert_to_ndarray(input_ids)
         inp = tvm.nd.array(input_ids.numpy(), self.dev)
-        tvm_out = self.clip["main"](inp)
-        return from_dlpack(tvm_out)
+        return from_dlpack(self.clip["main"](inp))
 
     def vae_inference(self, vae_input):
-        # TODO: why it doesn't work
         # inp = convert_to_ndarray(vae_input)
         inp = tvm.nd.array(vae_input.cpu().numpy(), self.dev)
         return from_dlpack(self.vae["main"](inp)) / 255
