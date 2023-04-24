@@ -1,6 +1,6 @@
 import numpy as np
-
 import tvm
+import pickle
 from tvm import relax, tir
 from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
 from tvm.relax.dpl import rewrite_call, is_op, wildcard, is_const
@@ -78,11 +78,11 @@ def run_opt_passes(mod, params=None):
         )(mod)
 
     return tvm.transform.Sequential(
-            [
-                relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
-                relax.transform.ToMixedPrecision(out_dtype="float16"),
-            ]
-        )(mod)
+        [
+            relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
+            relax.transform.ToMixedPrecision(out_dtype="float16"),
+        ]
+    )(mod)
 
 
 def run_lower_passes(mod, target, tune=False):
@@ -107,11 +107,8 @@ def run_lower_passes(mod, target, tune=False):
         return tvm.transform.Sequential(passes)(mod)
 
 
-def get_result(ex, dev, inputs, params=None, time_eval=False):
+def get_result(ex, dev, inputs, time_eval=False):
     vm = relax.VirtualMachine(ex, dev, profile=True)
-
-    # if params:
-    #     inputs.append(params.values())
 
     out = vm["main"](*inputs)
 
@@ -123,12 +120,21 @@ def get_result(ex, dev, inputs, params=None, time_eval=False):
     return out.numpy()
 
 
+def add_params_to_input(inputs, params, param_names, dev):
+    new_inputs = inputs
+    for p in param_names:
+        new_inputs.append(tvm.nd.array(params[p].numpy(), dev))
+    return new_inputs
+
+
 def get_ref(mod, params, target, dev, inputs, bind_params=True):
     passes = []
 
     if bind_params:
-        passes += [relax.transform.BindParams("main", params),
-                   relax.transform.FoldConstant()]
+        passes += [
+            relax.transform.BindParams("main", params),
+            relax.transform.FoldConstant(),
+        ]
 
     passes.append(relax.transform.ToMixedPrecision(out_dtype="float16"))
 
@@ -137,23 +143,24 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
     mod = run_lower_passes(mod, target)
     ex = relax.build(mod, target)
 
-    if bind_params:
-        return get_result(ex, dev, inputs)
+    if not bind_params:
+        param_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
+        inputs = add_params_to_input(inputs, params, param_names, dev)
 
-    return get_result(ex, dev, inputs, params=params)
+    return get_result(ex, dev, inputs)
 
 
 bind_params = True
 
-model = "clip"
+model = "unet"
 
 if bind_params:
     so_name = "{}.so".format(model)
 else:
     so_name = "{}_no_params.so".format(model)
 
-# target = tvm.target.Target("nvidia/geforce-rtx-3070")
-target = tvm.target.Target("llvm")
+target = tvm.target.Target("nvidia/geforce-rtx-3070")
+# target = tvm.target.Target("llvm")
 
 dev = tvm.device(target.kind.name, 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
@@ -183,8 +190,8 @@ if bind_params:
 else:
     mod = run_opt_passes(mod)
 
-# mod = partition_for_cutlass(mod)
-# mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
+mod = partition_for_cutlass(mod)
+mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
 
 mod = run_lower_passes(mod, target, tune=True)
 
@@ -194,6 +201,12 @@ ex.export_library(so_name)
 if bind_params:
     out = get_result(ex, dev, inputs, time_eval=False)
 else:
-    out = get_result(ex, dev, inputs, params=params, time_eval=False)
+    param_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
+    inputs = add_params_to_input(inputs, params, param_names, dev)
+
+    with open("{}_param_names.pkl".format(model), "wb") as f:
+        pickle.dump(param_names, f)
+
+    out = get_result(ex, dev, inputs, time_eval=False)
 
 print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))

@@ -3,6 +3,7 @@ from torch.utils.dlpack import to_dlpack, from_dlpack
 
 import numpy as np
 
+import pickle
 import time
 import inspect
 from typing import List, Optional, Union
@@ -25,6 +26,7 @@ class StableDiffusionTVMPipeline:
         text_encoder,
         unet,
         vae,
+        unet_params=None,
     ):
         self.dev = tvm.device("cuda", 0)
 
@@ -36,8 +38,13 @@ class StableDiffusionTVMPipeline:
         self.scheduler = self.original_pipe.scheduler
         self.safety_checker = self.original_pipe.safety_checker
 
+        if unet_params:
+            self.unet_params = [tvm.nd.array(p.numpy(), self.dev) for p in unet_params]
+        else:
+            self.unet_params = None
+
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
-        out = self.unet["main"](
+        inputs = [
             # TODO: why it doesn't work
             # convert_to_ndarray(latent_model_input),
             # convert_to_ndarray(timesteps),
@@ -45,8 +52,12 @@ class StableDiffusionTVMPipeline:
             tvm.nd.array(latent_model_input.cpu().numpy(), self.dev),
             tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
             tvm.nd.array(encoder_hidden_states.cpu().numpy(), self.dev),
-        )
-        return from_dlpack(out)
+        ]
+
+        if self.unet_params:
+            inputs += self.unet_params
+
+        return from_dlpack(self.unet["main"](*inputs))
 
     def clip_inference(self, input_ids):
         # TODO: why it doesn't work
@@ -212,18 +223,30 @@ def test(model, time_eval=False):
         print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
 
-# test("clip")
+bind_params = True
 
+# test("clip")
 pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 pipe.safety_checker = None
 # pipe.to("cuda")
 # pipe.enable_xformers_memory_efficient_attention()
 
 clip = tvm.runtime.load_module("clip.so")
-unet = tvm.runtime.load_module("unet.so")
 vae = tvm.runtime.load_module("vae.so")
 
-pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
+if bind_params:
+    unet = tvm.runtime.load_module("unet.so")
+    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
+else:
+    unet = tvm.runtime.load_module("unet_no_params.so")
+    param_dict = tvm.runtime.load_param_dict_from_file("unet.params")
+
+    with open("unet_param_names.pkl", "rb") as f:
+        unet_param_names = pickle.load(f)
+
+    unet_params = [param_dict[p] for p in unet_param_names]
+
+    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, unet_params)
 
 prompt = "Mt. Fuji in the style of Gauguin"
 
