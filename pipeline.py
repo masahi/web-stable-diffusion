@@ -221,6 +221,7 @@ def test(model, time_eval=False):
 bind_params = True
 
 # test("clip")
+
 pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 pipe.safety_checker = None
 # pipe.to("cuda")
@@ -234,7 +235,7 @@ if bind_params:
     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
 else:
     unet = tvm.runtime.load_module("unet_no_params.so")
-    param_dict = tvm.runtime.load_param_dict_from_file("unet.params")
+    param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
 
     with open("unet_param_names.pkl", "rb") as f:
         unet_param_names = pickle.load(f)

@@ -66,7 +66,7 @@ def simplify_div(f):
     return rewrite_call(pattern, callback, f)
 
 
-def run_opt_passes(mod, params=None):
+def run_opt_passes(mod, params=None, fp16_input_names=None):
     if params:
         return tvm.transform.Sequential(
             [
@@ -80,7 +80,9 @@ def run_opt_passes(mod, params=None):
     return tvm.transform.Sequential(
         [
             relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
-            relax.transform.ToMixedPrecision(out_dtype="float16"),
+            relax.transform.ToMixedPrecision(
+                out_dtype="float16", fp16_input_names=fp16_input_names
+            ),
         ]
     )(mod)
 
@@ -121,7 +123,8 @@ def get_result(ex, dev, inputs, time_eval=False):
 
 
 def add_params_to_input(inputs, params, param_names, dev):
-    new_inputs = inputs
+    new_inputs = [inp for inp in inputs]
+
     for p in param_names:
         new_inputs.append(tvm.nd.array(params[p].numpy(), dev))
     return new_inputs
@@ -188,10 +191,14 @@ mod["main"] = simplify_div(mod["main"])
 if bind_params:
     mod = run_opt_passes(mod, params)
 else:
-    mod = run_opt_passes(mod)
+    fp16_input_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
+    mod = run_opt_passes(mod, fp16_input_names=fp16_input_names)
 
-mod = partition_for_cutlass(mod)
-mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(mod)
+if "cuda" in target.kind.name:
+    mod = partition_for_cutlass(mod)
+    mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(
+        mod
+    )
 
 mod = run_lower_passes(mod, target, tune=True)
 
@@ -202,11 +209,17 @@ if bind_params:
     out = get_result(ex, dev, inputs, time_eval=False)
 else:
     param_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
-    inputs = add_params_to_input(inputs, params, param_names, dev)
-
     with open("{}_param_names.pkl".format(model), "wb") as f:
         pickle.dump(param_names, f)
 
+    params_fp16 = {}
+
+    for k, v in params.items():
+        params_fp16[k] = tvm.nd.array(v.numpy().astype("float16"))
+
+    tvm.runtime.save_param_dict_to_file(params_fp16, "{}_fp16.params".format(model))
+
+    inputs = add_params_to_input(inputs, params_fp16, param_names, dev)
     out = get_result(ex, dev, inputs, time_eval=False)
 
 print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
