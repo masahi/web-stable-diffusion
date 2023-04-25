@@ -66,25 +66,47 @@ def simplify_div(f):
     return rewrite_call(pattern, callback, f)
 
 
-def run_opt_passes(mod, params=None, fp16_input_names=None):
-    if params:
-        return tvm.transform.Sequential(
-            [
-                relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
-                relax.transform.BindParams("main", params),
-                relax.transform.FoldConstant(),
-                relax.transform.ToMixedPrecision(out_dtype="float16"),
-            ]
-        )(mod)
+def simplify_stride_slice(f):
+    inp_pat = wildcard()
+    pattern = is_op("relax.strided_slice")(inp_pat)
 
-    return tvm.transform.Sequential(
-        [
-            relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
+    def is_nop(v, begin, end, strides):
+        shape = v.struct_info.shape
+        for i in range(len(shape)):
+            if begin[i] != 0 or end[i] != shape[i] or strides[i] != 1:
+                return False
+        return True
+
+    def callback(orig, matchings):
+        inp = matchings[inp_pat]
+        if is_nop(inp, orig.attrs.begin, orig.attrs.end, orig.attrs.strides):
+            return inp
+        return orig
+
+    return rewrite_call(pattern, callback, f)
+
+
+def run_opt_passes(mod, params=None, fp16_input_names=None):
+    passes = [
+        relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
+        relax.transform.EliminateCommonSubexpr(),
+        relax.transform.CanonicalizeBindings(),
+    ]
+
+    if params:
+        passes += [
+            relax.transform.BindParams("main", params),
+            relax.transform.FoldConstant(),
+            relax.transform.ToMixedPrecision(out_dtype="float16"),
+        ]
+    else:
+        passes.append(
             relax.transform.ToMixedPrecision(
                 out_dtype="float16", fp16_input_names=fp16_input_names
-            ),
-        ]
-    )(mod)
+            )
+        )
+
+    return tvm.transform.Sequential(passes)(mod)
 
 
 def run_lower_passes(mod, target, tune=False):
@@ -187,6 +209,7 @@ ref = get_ref(mod, params, target, dev, inputs, bind_params=bind_params)
 
 mod["main"] = rewrite_attention(mod["main"])
 mod["main"] = simplify_div(mod["main"])
+mod["main"] = simplify_stride_slice(mod["main"])
 
 if bind_params:
     mod = run_opt_passes(mod, params)
