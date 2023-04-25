@@ -1,11 +1,17 @@
 import numpy as np
-import tvm
 import pickle
+import tvm
 from tvm import relax, tir
 from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
-from tvm.relax.dpl import rewrite_call, is_op, wildcard, is_const
+from tvm.relax.dpl import (
+    rewrite_call,
+    is_op,
+    wildcard,
+    is_const,
+    PatternContext,
+    rewrite_bindings,
+)
 from tvm.script import relax as R
-from tvm.relax.transform.tuning_api import Trace
 
 
 def deserialize(prefix):
@@ -86,11 +92,68 @@ def simplify_stride_slice(f):
     return rewrite_call(pattern, callback, f)
 
 
-def run_opt_passes(mod, params=None, fp16_input_names=None):
+def combine_parallel_matmul(f, num_branches, slice_axis=2):
+    with PatternContext() as ctx:
+        inp_pat = wildcard()
+
+        weight_patterns = []
+        matmul_patterns = []
+
+        for _ in range(num_branches):
+            w_pat = wildcard()
+            weight_patterns.append(w_pat)
+            matmul_patterns.append(is_op("relax.matmul")(inp_pat, w_pat))
+
+    def rewriter(matchings):
+        inp = matchings[inp_pat]
+
+        weights = [matchings[w_pat] for w_pat in weight_patterns]
+        concat = R.concat(weights, axis=1)
+        matmul = R.matmul(inp, concat)
+
+        replacements = {}
+
+        sections = []
+        ind = 0
+        for i, matmul_pat in enumerate(matmul_patterns[:-1]):
+            width = weights[i].struct_info.shape[1]
+            ind += width
+            sections.append(int(ind))
+
+        chunks = R.split(matmul, sections, slice_axis)
+
+        for i, matmul_pat in enumerate(matmul_patterns):
+            bound_var = matchings[matmul_pat]
+            replacements[bound_var] = chunks[i]
+
+        return replacements
+
+    return rewrite_bindings(ctx, rewriter, f)
+
+
+def get_rewrite_pass(combine_matmul=False):
+    @tvm.transform.module_pass(opt_level=0)
+    def rewrite_passes(mod, _):
+        mod["main"] = rewrite_attention(mod["main"])
+        mod["main"] = simplify_div(mod["main"])
+        mod["main"] = simplify_stride_slice(mod["main"])
+
+        if combine_matmul:
+            mod["main"] = combine_parallel_matmul(mod["main"], 32)
+            mod["main"] = combine_parallel_matmul(mod["main"], 22, slice_axis=1)
+            mod["main"] = combine_parallel_matmul(mod["main"], 3)
+
+        return mod
+
+    return rewrite_passes
+
+
+def run_opt_passes(mod, params=None, fp16_input_names=None, combine_matmul=False):
     passes = [
-        relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
         relax.transform.EliminateCommonSubexpr(),
         relax.transform.CanonicalizeBindings(),
+        get_rewrite_pass(combine_matmul),
+        relax.transform.ConvertLayout({"relax.nn.conv2d": ["NHWC", "OHWI"]}),
     ]
 
     if params:
@@ -131,16 +194,9 @@ def run_lower_passes(mod, target, tune=False):
         return tvm.transform.Sequential(passes)(mod)
 
 
-def get_result(ex, dev, inputs, time_eval=False):
+def get_result(ex, dev, inputs):
     vm = relax.VirtualMachine(ex, dev, profile=True)
-
     out = vm["main"](*inputs)
-
-    if time_eval:
-        print(vm.profile("main", *inputs))
-        # vm.set_input("main", *inputs)
-        # print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
-
     return out.numpy()
 
 
@@ -176,6 +232,8 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 
 bind_params = True
+verify = True
+combine_matmul = False
 
 model = "unet"
 
@@ -205,21 +263,20 @@ else:
 
 mod, params = deserialize(model)
 
-ref = get_ref(mod, params, target, dev, inputs, bind_params=bind_params)
-
-mod["main"] = rewrite_attention(mod["main"])
-mod["main"] = simplify_div(mod["main"])
-mod["main"] = simplify_stride_slice(mod["main"])
+if verify:
+    ref = get_ref(mod, params, target, dev, inputs, bind_params=bind_params)
 
 if bind_params:
-    mod = run_opt_passes(mod, params)
+    mod = run_opt_passes(mod, params, combine_matmul=combine_matmul)
 else:
     fp16_input_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
-    mod = run_opt_passes(mod, fp16_input_names=fp16_input_names)
+    mod = run_opt_passes(
+        mod, fp16_input_names=fp16_input_names, combine_matmul=combine_matmul
+    )
 
 if "cuda" in target.kind.name:
     mod = partition_for_cutlass(mod)
-    mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": True}})(
+    mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": False}})(
         mod
     )
 
@@ -228,21 +285,22 @@ mod = run_lower_passes(mod, target, tune=True)
 ex = relax.build(mod, target)
 ex.export_library(so_name)
 
-if bind_params:
-    out = get_result(ex, dev, inputs, time_eval=False)
-else:
-    param_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
-    with open("{}_param_names.pkl".format(model), "wb") as f:
-        pickle.dump(param_names, f)
+if verify:
+    if bind_params:
+        out = get_result(ex, dev, inputs)
+    else:
+        param_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
+        with open("{}_param_names.pkl".format(model), "wb") as f:
+            pickle.dump(param_names, f)
 
-    params_fp16 = {}
+        params_fp16 = {}
 
-    for k, v in params.items():
-        params_fp16[k] = tvm.nd.array(v.numpy().astype("float16"))
+        for k, v in params.items():
+            params_fp16[k] = tvm.nd.array(v.numpy().astype("float16"))
 
-    tvm.runtime.save_param_dict_to_file(params_fp16, "{}_fp16.params".format(model))
+        tvm.runtime.save_param_dict_to_file(params_fp16, "{}_fp16.params".format(model))
 
-    inputs = add_params_to_input(inputs, params_fp16, param_names, dev)
-    out = get_result(ex, dev, inputs, time_eval=False)
+        inputs = add_params_to_input(inputs, params_fp16, param_names, dev)
+        out = get_result(ex, dev, inputs)
 
-print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
+    print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))

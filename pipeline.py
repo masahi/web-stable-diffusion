@@ -187,7 +187,7 @@ class StableDiffusionTVMPipeline:
         )
 
 
-def test(model, time_eval=False):
+def test(model):
     so_name = "{}.so".format(model)
     ex = tvm.runtime.load_module(so_name)
 
@@ -211,16 +211,15 @@ def test(model, time_eval=False):
 
     vm = relax.VirtualMachine(ex, dev, profile=True)
 
-    if time_eval:
-        print(vm.profile("main", *inputs))
+    print(vm.profile("main", *inputs))
 
-        vm.set_input("main", *inputs)
-        print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
+    vm.set_input("main", *inputs)
+    print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
 
 bind_params = True
 
-# test("clip")
+# test("unet")
 
 pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 pipe.safety_checker = None
