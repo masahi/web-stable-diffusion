@@ -184,12 +184,13 @@ def run_lower_passes(mod, target, tune=False):
                 # passes.append(relax.transform.MetaScheduleTuneIRMod(
                 #     params={},
                 #     work_dir=work_dir,
-                #     max_trials_global=500,
+                #     max_trials_global=2000,
+                #     # max_trials_per_task=50,
+                #     # op_names=["layer_norm", "group_norm"]
                 # ))
                 passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
                 passes.append(tir.transform.DefaultGPUSchedule())
 
-    # with target, tvm.transform.PassContext(trace=Trace(mod), opt_level=0):
     with target, tvm.transform.PassContext(opt_level=3):
         return tvm.transform.Sequential(passes)(mod)
 
@@ -233,7 +234,7 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 bind_params = True
 verify = True
-combine_matmul = False
+combine_matmul = True and bind_params # we shouldn't combine when weights are not constant
 
 model = "unet"
 

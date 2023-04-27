@@ -213,8 +213,8 @@ def test(model):
 
     print(vm.profile("main", *inputs))
 
-    vm.set_input("main", *inputs)
-    print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
+    # vm.set_input("main", *inputs)
+    # print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
 
 bind_params = True
