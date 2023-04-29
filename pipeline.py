@@ -43,6 +43,9 @@ class StableDiffusionTVMPipeline:
         else:
             self.unet_params = None
 
+        # Warmp, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
+        from_dlpack(self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev)))
+
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
         inputs = [
             # convert_to_ndarray(latent_model_input),
@@ -163,7 +166,7 @@ class StableDiffusionTVMPipeline:
 
         assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
 
-        for i, t in enumerate(
+        for _, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
             noise_pred = self.unet_inference(
