@@ -43,17 +43,16 @@ class StableDiffusionTVMPipeline:
         else:
             self.unet_params = None
 
-        # Warmp, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
-        from_dlpack(self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev)))
+        # Warm up, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
+        from_dlpack(
+            self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev))
+        )
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
         inputs = [
-            # convert_to_ndarray(latent_model_input),
-            # convert_to_ndarray(timesteps),
-            # convert_to_ndarray(encoder_hidden_states),
-            tvm.nd.array(latent_model_input.cpu().numpy(), self.dev),
+            convert_to_ndarray(latent_model_input),
             tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
-            tvm.nd.array(encoder_hidden_states.cpu().numpy(), self.dev),
+            convert_to_ndarray(encoder_hidden_states),
         ]
 
         if self.unet_params:
@@ -62,12 +61,11 @@ class StableDiffusionTVMPipeline:
         return from_dlpack(self.unet["main"](*inputs))
 
     def clip_inference(self, input_ids):
-        inp = tvm.nd.array(input_ids.numpy(), self.dev)
+        inp = convert_to_ndarray(input_ids)
         return from_dlpack(self.clip["main"](inp))
 
     def vae_inference(self, vae_input):
-        # inp = convert_to_ndarray(vae_input)
-        inp = tvm.nd.array(vae_input.cpu().numpy(), self.dev)
+        inp = convert_to_ndarray(vae_input)
         return from_dlpack(self.vae["main"](inp)) / 255
 
     @torch.no_grad()
@@ -97,7 +95,7 @@ class StableDiffusionTVMPipeline:
             return_tensors="pt",
         )
 
-        text_embeddings = self.clip_inference(text_input.input_ids)
+        text_embeddings = self.clip_inference(text_input.input_ids.to("cuda"))
 
         do_classifier_free_guidance = guidance_scale > 1.0
         assert do_classifier_free_guidance, "Not implemeted"
@@ -130,7 +128,7 @@ class StableDiffusionTVMPipeline:
                 truncation=True,
                 return_tensors="pt",
             )
-            uncond_embeddings = self.clip_inference(uncond_input.input_ids)
+            uncond_embeddings = self.clip_inference(uncond_input.input_ids.to("cuda"))
             text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
 
         latents = torch.randn(
@@ -216,8 +214,8 @@ def test(model):
 
     print(vm.profile("main", *inputs))
 
-    # vm.set_input("main", *inputs)
-    # print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
+    vm.set_input("main", *inputs)
+    print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
 
 bind_params = True

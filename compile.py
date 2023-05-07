@@ -186,7 +186,7 @@ def run_lower_passes(mod, target, tune=False):
                 #     work_dir=work_dir,
                 #     max_trials_global=2000,
                 #     # max_trials_per_task=50,
-                #     # op_names=["layer_norm", "group_norm"]
+                #     # op_names=["group_norm"]
                 # ))
                 passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
                 passes.append(tir.transform.DefaultGPUSchedule())
@@ -234,7 +234,9 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 bind_params = True
 verify = True
-combine_matmul = True and bind_params # we shouldn't combine when weights are not constant
+combine_matmul = (
+    True and bind_params
+)  # we shouldn't combine when weights are not constant
 
 model = "unet"
 
@@ -277,13 +279,15 @@ else:
 
 if "cuda" in target.kind.name:
     mod = partition_for_cutlass(mod)
-    mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": False}})(
-        mod
-    )
+    mod = relax.transform.RunCodegen(
+        {"cutlass": {"sm": 80, "find_first_valid": False}}
+    )(mod)
 
 mod = run_lower_passes(mod, target, tune=True)
 
-ex = relax.build(mod, target)
+with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": False}):
+    ex = relax.build(mod, target)
+
 ex.export_library(so_name)
 
 if verify:
