@@ -275,15 +275,17 @@ else:
         mod, fp16_input_names=fp16_input_names, combine_matmul=combine_matmul
     )
 
-if "cuda" in target.kind.name:
-    mod = partition_for_cutlass(mod)
-    mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": False}})(
-        mod
-    )
+# if "cuda" in target.kind.name:
+#     mod = partition_for_cutlass(mod)
+#     mod = relax.transform.RunCodegen({"cutlass": {"sm": 80, "find_first_valid": False}})(
+#         mod
+#     )
 
 mod = run_lower_passes(mod, target, tune=True)
 
-ex = relax.build(mod, target)
+with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": True}):
+    ex = relax.build(mod, target)
+
 ex.export_library(so_name)
 
 if verify:
