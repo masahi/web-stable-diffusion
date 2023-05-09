@@ -11,7 +11,7 @@ from typing import List, Optional, Union
 import tvm
 from tvm import relax
 
-from diffusers import LMSDiscreteScheduler, StableDiffusionPipeline
+from diffusers import LMSDiscreteScheduler, StableDiffusionPipeline, EulerDiscreteScheduler
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
 
@@ -167,8 +167,10 @@ class StableDiffusionTVMPipeline:
         for _, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
+            latents_input = self.scheduler.scale_model_input(latents, t)
+
             noise_pred = self.unet_inference(
-                latents, t, encoder_hidden_states=text_embeddings
+                latents_input, t, encoder_hidden_states=text_embeddings
             )
 
             latents = self.scheduler.step(
@@ -189,6 +191,7 @@ class StableDiffusionTVMPipeline:
 
 
 def test(model):
+    hidden_dim = 1024
     so_name = "{}.so".format(model)
     ex = tvm.runtime.load_module(so_name)
 
@@ -197,7 +200,7 @@ def test(model):
     dev = tvm.device(target.kind.name, 0)
     inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
     inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
-    inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
+    inp_2 = tvm.nd.array(np.random.randn(2, 77, hidden_dim).astype("float32"), dev)
 
     if model == "unet":
         inputs = [inp_0, inp_1, inp_2]
@@ -222,7 +225,12 @@ bind_params = True
 
 # test("unet")
 
-pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+# pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+
+model_id = "/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/1f758383196d38df1dfe523ddb1030f2bfab7741"
+scheduler = EulerDiscreteScheduler.from_pretrained("/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/88bb1a46821197d1ac0cb54d1d09fb6e70b171bc", subfolder="scheduler")
+pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
+
 pipe.safety_checker = None
 # pipe.to("cuda")
 # pipe.enable_xformers_memory_efficient_attention()
