@@ -47,26 +47,44 @@ class StableDiffusionTVMPipeline:
         from_dlpack(
             self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev))
         )
+        self.original_pipe.unet.to("cuda")
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
-        inputs = [
-            convert_to_ndarray(latent_model_input),
-            tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
-            convert_to_ndarray(encoder_hidden_states),
-        ]
+        # inputs = [
+        #     convert_to_ndarray(latent_model_input),
+        #     tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
+        #     convert_to_ndarray(encoder_hidden_states),
+        # ]
 
-        if self.unet_params:
-            inputs += self.unet_params
+        # if self.unet_params:
+        #     inputs += self.unet_params
 
-        return from_dlpack(self.unet["main"](*inputs))
+        # return from_dlpack(self.unet["main"](*inputs))
+        latents = latent_model_input
+        latent_model_input = torch.cat([latents] * 2, dim=0)
+        noise_pred = self.original_pipe.unet(latent_model_input, timesteps, encoder_hidden_states)
+        noise_pred_uncond, noise_pred_text = noise_pred.sample.chunk(2)
+        noise_pred = noise_pred_uncond + 7.5 * (
+            noise_pred_text - noise_pred_uncond
+        )
+        return noise_pred
+
 
     def clip_inference(self, input_ids):
-        inp = convert_to_ndarray(input_ids)
-        return from_dlpack(self.clip["main"](inp))
+        # inp = convert_to_ndarray(input_ids)
+        # return from_dlpack(self.clip["main"](inp))
+        return self.original_pipe.text_encoder(input_ids.to("cpu"))[0].to("cuda")
 
     def vae_inference(self, vae_input):
-        inp = convert_to_ndarray(vae_input)
-        return from_dlpack(self.vae["main"](inp)) / 255
+        # inp = convert_to_ndarray(vae_input)
+        # return from_dlpack(self.vae["main"](inp)) / 255
+        latents = 1 / 0.18215 * vae_input.to("cpu")
+        image = self.original_pipe.vae.decoder(latents)
+        image = (image / 2 + 0.5).clamp(min=0, max=1)
+        image = (image.permute(0, 2, 3, 1))
+        return image
+
+
 
     @torch.no_grad()
     def __call__(
@@ -229,7 +247,7 @@ bind_params = True
 
 model_id = "/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/1f758383196d38df1dfe523ddb1030f2bfab7741"
 scheduler = EulerDiscreteScheduler.from_pretrained("/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/88bb1a46821197d1ac0cb54d1d09fb6e70b171bc", subfolder="scheduler")
-pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler)
+pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
 
 pipe.safety_checker = None
 # pipe.to("cuda")
