@@ -184,7 +184,7 @@ def run_lower_passes(mod, target, tune=False):
                 # passes.append(relax.transform.MetaScheduleTuneIRMod(
                 #     params={},
                 #     work_dir=work_dir,
-                #     max_trials_global=2000,
+                #     max_trials_global=1500,
                 #     # max_trials_per_task=50,
                 #     # op_names=["group_norm"]
                 # ))
@@ -239,6 +239,8 @@ combine_matmul = (
 )  # we shouldn't combine when weights are not constant
 
 model = "unet"
+hidden_dim = 1024 # for v2.1
+# hidden_dim = 768 # for v1.5
 
 if bind_params:
     so_name = "{}.so".format(model)
@@ -251,7 +253,7 @@ target = tvm.target.Target("nvidia/geforce-rtx-3070")
 dev = tvm.device(target.kind.name, 0)
 inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
-inp_2 = tvm.nd.array(np.random.randn(2, 77, 768).astype("float32"), dev)
+inp_2 = tvm.nd.array(np.random.randn(2, 77, hidden_dim).astype("float32"), dev)
 
 if model == "unet":
     inputs = [inp_0, inp_1, inp_2]
