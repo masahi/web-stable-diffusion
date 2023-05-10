@@ -31,60 +31,58 @@ class StableDiffusionTVMPipeline:
         self.dev = tvm.device("cuda", 0)
 
         self.original_pipe = original_pipe
-        # self.clip = relax.VirtualMachine(text_encoder, self.dev)
-        # self.vae = relax.VirtualMachine(vae, self.dev)
-        # self.unet = relax.VirtualMachine(unet, self.dev)
+        self.clip = relax.VirtualMachine(text_encoder, self.dev)
+        self.vae = relax.VirtualMachine(vae, self.dev)
+        self.unet = relax.VirtualMachine(unet, self.dev)
         self.tokenizer = self.original_pipe.tokenizer
         self.scheduler = self.original_pipe.scheduler
         self.safety_checker = self.original_pipe.safety_checker
 
-        # if unet_params:
-        #     self.unet_params = [tvm.nd.array(p.numpy(), self.dev) for p in unet_params]
-        # else:
-        #     self.unet_params = None
+        if unet_params:
+            self.unet_params = [tvm.nd.array(p.numpy(), self.dev) for p in unet_params]
+        else:
+            self.unet_params = None
 
-        # # Warm up, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
-        # from_dlpack(
-        #     self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev))
-        # )
+        # Warm up, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
+        from_dlpack(
+            self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev))
+        )
         self.original_pipe.unet.to("cuda")
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
-        # inputs = [
-        #     convert_to_ndarray(latent_model_input),
-        #     tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
-        #     convert_to_ndarray(encoder_hidden_states),
-        # ]
+        inputs = [
+            convert_to_ndarray(latent_model_input),
+            tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
+            convert_to_ndarray(encoder_hidden_states),
+        ]
 
-        # if self.unet_params:
-        #     inputs += self.unet_params
+        if self.unet_params:
+            inputs += self.unet_params
 
-        # return from_dlpack(self.unet["main"](*inputs))
-        latents = latent_model_input
-        latent_model_input = torch.cat([latents] * 2, dim=0)
-        noise_pred = self.original_pipe.unet(latent_model_input, timesteps, encoder_hidden_states)
-        noise_pred_uncond, noise_pred_text = noise_pred.sample.chunk(2)
-        noise_pred = noise_pred_uncond + 7.5 * (
-            noise_pred_text - noise_pred_uncond
-        )
-        return noise_pred
+        return from_dlpack(self.unet["main"](*inputs))
+        # latents = latent_model_input
+        # latent_model_input = torch.cat([latents] * 2)
+        # noise_pred = self.original_pipe.unet(latent_model_input, timesteps, encoder_hidden_states)
+        # noise_pred_uncond, noise_pred_text = noise_pred.sample.chunk(2)
+        # noise_pred = noise_pred_uncond + 7.5 * (
+        #     noise_pred_text - noise_pred_uncond
+        # )
+        # return noise_pred
 
 
     def clip_inference(self, input_ids):
-        # inp = convert_to_ndarray(input_ids)
-        # return from_dlpack(self.clip["main"](inp))
-        return self.original_pipe.text_encoder(input_ids.to("cpu"))[0].to("cuda")
+        inp = convert_to_ndarray(input_ids)
+        return from_dlpack(self.clip["main"](inp))
+#         return self.original_pipe.text_encoder(input_ids)[0]
 
     def vae_inference(self, vae_input):
-        # inp = convert_to_ndarray(vae_input)
-        # return from_dlpack(self.vae["main"](inp)) / 255
-        latents = 1 / 0.18215 * vae_input.to("cpu")
-        image = self.original_pipe.vae.decode(latents, return_dict=False)[0]
-        image = (image / 2 + 0.5).clamp(min=0, max=1)
-        image = (image.permute(0, 2, 3, 1))
-        return image
-
-
+        inp = convert_to_ndarray(vae_input)
+        return from_dlpack(self.vae["main"](inp)) / 255
+        # latents = 1 / 0.18215 * vae_input
+        # image = self.original_pipe.vae.decode(latents, return_dict=False)[0]
+        # image = (image / 2 + 0.5).clamp(min=0, max=1)
+        # image = (image.permute(0, 2, 3, 1))
+        # return image
 
     @torch.no_grad()
     def __call__(
@@ -182,18 +180,22 @@ class StableDiffusionTVMPipeline:
 
         assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
 
+        torch.save(text_embeddings.cpu().numpy(), "prompt_embeds2.pt")
+        torch.save(latents.cpu().numpy(), "before_unet2.pt")
         for _, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
-            latents = self.scheduler.scale_model_input(latents, t)
+            latent_model_input = self.scheduler.scale_model_input(latents, t)
 
             noise_pred = self.unet_inference(
-                latents, t, encoder_hidden_states=text_embeddings
+                latent_model_input, t, encoder_hidden_states=text_embeddings
             )
 
             latents = self.scheduler.step(
                 noise_pred, t, latents, **extra_step_kwargs
             ).prev_sample
+
+        torch.save(latents.cpu().numpy(), "after_unet2.pt")
 
         image = self.vae_inference(latents)
         image = self.original_pipe.numpy_to_pil(image.cpu().numpy())
@@ -251,25 +253,28 @@ pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
 
 pipe.safety_checker = None
 # pipe.to("cuda")
+
+torch.manual_seed(0)
 # pipe.enable_xformers_memory_efficient_attention()
 
 clip = tvm.runtime.load_module("clip.so")
 vae = tvm.runtime.load_module("vae.so")
 
-# if bind_params:
-#     unet = tvm.runtime.load_module("unet.so")
-#     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
-# else:
-#     unet = tvm.runtime.load_module("unet_no_params.so")
-#     param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
+if bind_params:
+    unet = tvm.runtime.load_module("unet.so")
+    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
+else:
+    unet = tvm.runtime.load_module("unet_no_params.so")
+    param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
 
-#     with open("unet_param_names.pkl", "rb") as f:
-#         unet_param_names = pickle.load(f)
+    with open("unet_param_names.pkl", "rb") as f:
+        unet_param_names = pickle.load(f)
 
-#     unet_params = [param_dict[p] for p in unet_param_names]
+    unet_params = [param_dict[p] for p in unet_param_names]
 
-#     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, unet_params)
-pipe_tvm = StableDiffusionTVMPipeline(pipe, None, None, None)
+    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, unet_params)
+
+# pipe_tvm = StableDiffusionTVMPipeline(pipe, None, None, None)
 
 prompt = "Mt. Fuji in the style of Gauguin"
 
@@ -279,3 +284,8 @@ t2 = time.time()
 
 sample.save("out.png")
 print(t2 - t1)
+
+u1 = torch.load("after_unet.pt")
+u2 = torch.load("after_unet2.pt")
+
+print(np.mean(np.abs(u1 - u2)))
