@@ -23,7 +23,7 @@ def clip_to_text_embeddings(pipe) -> tvm.IRModule:
     clip = pipe.text_encoder
     clip_to_text_embeddings = CLIPModelWrapper(clip)
 
-    text_input_ids = torch.rand((1, 77)).to(torch.int32)
+    text_input_ids = torch.rand((1, 77)).to(torch.int64)
     mod = dynamo_capture_subgraphs(
         clip_to_text_embeddings.forward,
         text_input_ids,
