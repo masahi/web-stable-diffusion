@@ -31,22 +31,22 @@ class StableDiffusionTVMPipeline:
         self.dev = tvm.device("cuda", 0)
 
         self.original_pipe = original_pipe
-        self.clip = relax.VirtualMachine(text_encoder, self.dev)
-        self.vae = relax.VirtualMachine(vae, self.dev)
-        self.unet = relax.VirtualMachine(unet, self.dev)
+        # self.clip = relax.VirtualMachine(text_encoder, self.dev)
+        # self.vae = relax.VirtualMachine(vae, self.dev)
+        # self.unet = relax.VirtualMachine(unet, self.dev)
         self.tokenizer = self.original_pipe.tokenizer
         self.scheduler = self.original_pipe.scheduler
         self.safety_checker = self.original_pipe.safety_checker
 
-        if unet_params:
-            self.unet_params = [tvm.nd.array(p.numpy(), self.dev) for p in unet_params]
-        else:
-            self.unet_params = None
+        # if unet_params:
+        #     self.unet_params = [tvm.nd.array(p.numpy(), self.dev) for p in unet_params]
+        # else:
+        #     self.unet_params = None
 
-        # Warm up, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
-        from_dlpack(
-            self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev))
-        )
+        # # Warm up, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
+        # from_dlpack(
+        #     self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev))
+        # )
         self.original_pipe.unet.to("cuda")
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
@@ -79,7 +79,7 @@ class StableDiffusionTVMPipeline:
         # inp = convert_to_ndarray(vae_input)
         # return from_dlpack(self.vae["main"](inp)) / 255
         latents = 1 / 0.18215 * vae_input.to("cpu")
-        image = self.original_pipe.vae.decoder(latents)
+        image = self.original_pipe.vae.decode(latents, return_dict=False)[0]
         image = (image / 2 + 0.5).clamp(min=0, max=1)
         image = (image.permute(0, 2, 3, 1))
         return image
@@ -256,19 +256,20 @@ pipe.safety_checker = None
 clip = tvm.runtime.load_module("clip.so")
 vae = tvm.runtime.load_module("vae.so")
 
-if bind_params:
-    unet = tvm.runtime.load_module("unet.so")
-    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
-else:
-    unet = tvm.runtime.load_module("unet_no_params.so")
-    param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
+# if bind_params:
+#     unet = tvm.runtime.load_module("unet.so")
+#     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
+# else:
+#     unet = tvm.runtime.load_module("unet_no_params.so")
+#     param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
 
-    with open("unet_param_names.pkl", "rb") as f:
-        unet_param_names = pickle.load(f)
+#     with open("unet_param_names.pkl", "rb") as f:
+#         unet_param_names = pickle.load(f)
 
-    unet_params = [param_dict[p] for p in unet_param_names]
+#     unet_params = [param_dict[p] for p in unet_param_names]
 
-    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, unet_params)
+#     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, unet_params)
+pipe_tvm = StableDiffusionTVMPipeline(pipe, None, None, None)
 
 prompt = "Mt. Fuji in the style of Gauguin"
 
