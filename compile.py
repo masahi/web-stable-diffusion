@@ -232,15 +232,13 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
     return get_result(ex, dev, inputs)
 
 
-bind_params = True
-verify = True
-combine_matmul = (
-    True and bind_params
-)  # we shouldn't combine when weights are not constant
+bind_params = False
+verify = False
+combine_matmul = True
 
 model = "unet"
-hidden_dim = 1024 # for v2.1
-# hidden_dim = 768 # for v1.5
+# hidden_dim = 1024 # for v2.1
+hidden_dim = 768  # for v1.5
 
 if bind_params:
     so_name = "{}.so".format(model)
@@ -268,6 +266,17 @@ else:
 
 mod, params = deserialize(model)
 
+if not bind_params:
+    param_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
+    params_fp16 = {}
+
+    for i, name in enumerate(param_names):
+        params_fp16[name + f"_{i}"] = tvm.nd.array(
+            params[name].numpy().astype("float16")
+        )
+
+    tvm.runtime.save_param_dict_to_file(params_fp16, "{}_fp16.params".format(model))
+
 if verify:
     ref = get_ref(mod, params, target, dev, inputs, bind_params=bind_params)
 
@@ -287,6 +296,10 @@ if "cuda" in target.kind.name:
 
 mod = run_lower_passes(mod, target, tune=True)
 
+# if not bind_params:
+#     mod = relax.transform.LiftTransformParams()(mod)
+#     print(mod)
+
 with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": False}):
     ex = relax.build(mod, target)
 
@@ -296,17 +309,6 @@ if verify:
     if bind_params:
         out = get_result(ex, dev, inputs)
     else:
-        param_names = [p.name_hint for p in mod["main"].params[len(inputs) :]]
-        with open("{}_param_names.pkl".format(model), "wb") as f:
-            pickle.dump(param_names, f)
-
-        params_fp16 = {}
-
-        for k, v in params.items():
-            params_fp16[k] = tvm.nd.array(v.numpy().astype("float16"))
-
-        tvm.runtime.save_param_dict_to_file(params_fp16, "{}_fp16.params".format(model))
-
         inputs = add_params_to_input(inputs, params_fp16, param_names, dev)
         out = get_result(ex, dev, inputs)
 

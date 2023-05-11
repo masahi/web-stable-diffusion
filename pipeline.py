@@ -11,7 +11,11 @@ from typing import List, Optional, Union
 import tvm
 from tvm import relax
 
-from diffusers import LMSDiscreteScheduler, StableDiffusionPipeline, EulerDiscreteScheduler
+from diffusers import (
+    LMSDiscreteScheduler,
+    StableDiffusionPipeline,
+    EulerDiscreteScheduler,
+)
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
 
@@ -221,15 +225,15 @@ def test(model):
     print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
 
-bind_params = True
+bind_params = False
 
 # test("unet")
 
-# pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 
-model_id = "/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/1f758383196d38df1dfe523ddb1030f2bfab7741"
-scheduler = EulerDiscreteScheduler.from_pretrained("/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/88bb1a46821197d1ac0cb54d1d09fb6e70b171bc", subfolder="scheduler")
-pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
+# model_id = "stabilityai/stable-diffusion-2-1-base"
+# scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
+# pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
 
 pipe.safety_checker = None
 # pipe.to("cuda")
@@ -245,10 +249,9 @@ else:
     unet = tvm.runtime.load_module("unet_no_params.so")
     param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
 
-    with open("unet_param_names.pkl", "rb") as f:
-        unet_param_names = pickle.load(f)
-
-    unet_params = [param_dict[p] for p in unet_param_names]
+    names = param_dict.keys()
+    sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
+    unet_params = [param_dict[name] for name in sorted_names]
 
     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, unet_params)
 
