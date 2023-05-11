@@ -39,16 +39,10 @@ def unet_latents_to_noise_pred(pipe, device_str: str) -> tvm.IRModule:
         def __init__(self, unet):
             super().__init__()
             self.unet = unet
-            self.guidance_scale = 7.5
 
         def forward(self, latents, timestep_tensor, text_embeddings):
             latent_model_input = torch.cat([latents] * 2, dim=0)
-            noise_pred = self.unet(latent_model_input, timestep_tensor, text_embeddings)
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + self.guidance_scale * (
-                noise_pred_text - noise_pred_uncond
-            )
-            return noise_pred
+            return self.unet(latent_model_input, timestep_tensor, text_embeddings)
 
     hidden_size = pipe.unet.config.cross_attention_dim
     attention_head_dim = pipe.unet.config.attention_head_dim
