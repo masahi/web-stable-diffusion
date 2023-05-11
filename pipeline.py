@@ -43,7 +43,8 @@ class StableDiffusionTVMPipeline:
         self.safety_checker = self.original_pipe.safety_checker
 
         if unet_params:
-            self.unet_params = [tvm.nd.array(p.numpy(), self.dev) for p in unet_params]
+            params_gpu = [p.copyto(self.dev) for p in unet_params]
+            self.unet_params = self.unet["main_transform_params"](params_gpu)
         else:
             self.unet_params = None
 
@@ -60,7 +61,7 @@ class StableDiffusionTVMPipeline:
         ]
 
         if self.unet_params:
-            inputs += self.unet_params
+            inputs.append(self.unet_params)
 
         return from_dlpack(self.unet["main"](*inputs))
 

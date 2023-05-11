@@ -195,8 +195,14 @@ def run_lower_passes(mod, target, tune=False):
         return tvm.transform.Sequential(passes)(mod)
 
 
-def get_result(ex, dev, inputs):
+def get_result(ex, dev, inputs, params_fp16=None):
     vm = relax.VirtualMachine(ex, dev, profile=True)
+
+    if params_fp16:
+        params_gpu = [p.copyto(dev) for p in params_fp16]
+        params_transformed = vm["main_transform_params"](params_gpu)
+        inputs.append(params_transformed)
+
     out = vm["main"](*inputs)
     return out.numpy()
 
@@ -233,7 +239,7 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 
 bind_params = False
-verify = False
+verify = True
 combine_matmul = True
 
 model = "unet"
@@ -296,9 +302,8 @@ if "cuda" in target.kind.name:
 
 mod = run_lower_passes(mod, target, tune=True)
 
-# if not bind_params:
-#     mod = relax.transform.LiftTransformParams()(mod)
-#     print(mod)
+if not bind_params:
+    mod = relax.transform.LiftTransformParams()(mod)
 
 with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": False}):
     ex = relax.build(mod, target)
@@ -309,7 +314,7 @@ if verify:
     if bind_params:
         out = get_result(ex, dev, inputs)
     else:
-        inputs = add_params_to_input(inputs, params_fp16, param_names, dev)
-        out = get_result(ex, dev, inputs)
+        params = [params_fp16[name + f"_{i}"] for i, name in enumerate(param_names)]
+        out = get_result(ex, dev, inputs, params)
 
     print(np.max(np.abs(out - ref)), np.mean(np.abs(out - ref)))
