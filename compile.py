@@ -163,11 +163,12 @@ def run_opt_passes(mod, params=None, fp16_input_names=None, combine_matmul=False
             relax.transform.ToMixedPrecision(out_dtype="float16"),
         ]
     else:
-        passes.append(
+        passes += [
+            relax.transform.FoldConstant(),
             relax.transform.ToMixedPrecision(
                 out_dtype="float16", fp16_input_names=fp16_input_names
-            )
-        )
+            ),
+        ]
 
     return tvm.transform.Sequential(passes)(mod)
 

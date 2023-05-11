@@ -23,6 +23,14 @@ def convert_to_ndarray(tensor):
     return tvm.runtime.ndarray.from_dlpack(to_dlpack(tensor))
 
 
+def transform_params(vm, params, dev):
+    if params:
+        params_gpu = [p.copyto(dev) for p in params]
+        return vm["main_transform_params"](params_gpu)
+
+    return None
+
+
 class StableDiffusionTVMPipeline:
     def __init__(
         self,
@@ -30,7 +38,9 @@ class StableDiffusionTVMPipeline:
         text_encoder,
         unet,
         vae,
+        clip_params=None,
         unet_params=None,
+        vae_params=None,
     ):
         self.dev = tvm.device("cuda", 0)
 
@@ -42,16 +52,16 @@ class StableDiffusionTVMPipeline:
         self.scheduler = self.original_pipe.scheduler
         self.safety_checker = self.original_pipe.safety_checker
 
-        if unet_params:
-            params_gpu = [p.copyto(self.dev) for p in unet_params]
-            self.unet_params = self.unet["main_transform_params"](params_gpu)
-        else:
-            self.unet_params = None
+        self.clip_params = transform_params(self.clip, clip_params, self.dev)
+        self.unet_params = transform_params(self.unet, unet_params, self.dev)
+        self.vae_params = transform_params(self.vae, vae_params, self.dev)
 
         # Warm up, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
-        from_dlpack(
-            self.clip["main"](tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev))
-        )
+        inputs = [tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev)]
+        if self.clip_params:
+            inputs.append(self.clip_params)
+
+        from_dlpack(self.clip["main"](*inputs))
 
     def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
         inputs = [
@@ -66,12 +76,20 @@ class StableDiffusionTVMPipeline:
         return from_dlpack(self.unet["main"](*inputs))
 
     def clip_inference(self, input_ids):
-        inp = convert_to_ndarray(input_ids)
-        return from_dlpack(self.clip["main"](inp))
+        inputs = [convert_to_ndarray(input_ids)]
+
+        if self.clip_params:
+            inputs.append(self.clip_params)
+
+        return from_dlpack(self.clip["main"](*inputs))
 
     def vae_inference(self, vae_input):
-        inp = convert_to_ndarray(vae_input)
-        return from_dlpack(self.vae["main"](inp)) / 255
+        inputs = [convert_to_ndarray(vae_input)]
+
+        if self.vae_params:
+            inputs.append(self.vae_params)
+
+        return from_dlpack(self.vae["main"](*inputs)) / 255
 
     @torch.no_grad()
     def __call__(
@@ -226,6 +244,16 @@ def test(model):
     print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
 
+def load_model_and_params(prefix):
+    mod = tvm.runtime.load_module(f"{prefix}_no_params.so")
+    param_dict = tvm.runtime.load_param_dict_from_file(f"{prefix}_fp16.params")
+
+    names = param_dict.keys()
+    sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
+
+    return mod, [param_dict[name] for name in sorted_names]
+
+
 bind_params = False
 
 # test("unet")
@@ -240,21 +268,20 @@ pipe.safety_checker = None
 # pipe.to("cuda")
 # pipe.enable_xformers_memory_efficient_attention()
 
-clip = tvm.runtime.load_module("clip.so")
-vae = tvm.runtime.load_module("vae.so")
-
 if bind_params:
+    clip = tvm.runtime.load_module("clip.so")
     unet = tvm.runtime.load_module("unet.so")
+    vae = tvm.runtime.load_module("vae.so")
+
     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
 else:
-    unet = tvm.runtime.load_module("unet_no_params.so")
-    param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
+    clip, clip_params = load_model_and_params("clip")
+    unet, unet_params = load_model_and_params("unet")
+    vae, vae_params = load_model_and_params("vae")
 
-    names = param_dict.keys()
-    sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
-    unet_params = [param_dict[name] for name in sorted_names]
-
-    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, unet_params)
+    pipe_tvm = StableDiffusionTVMPipeline(
+        pipe, clip, unet, vae, clip_params, unet_params, vae_params
+    )
 
 prompt = "Mt. Fuji in the style of Gauguin"
 
