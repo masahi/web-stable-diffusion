@@ -15,6 +15,7 @@ from diffusers import (
     LMSDiscreteScheduler,
     StableDiffusionPipeline,
     EulerDiscreteScheduler,
+    EulerAncestralDiscreteScheduler,
 )
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
@@ -263,15 +264,18 @@ bind_params = False
 
 # test("unet")
 
-pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+pipe = StableDiffusionPipeline.from_pretrained("XpucT/Deliberate")
+pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
 
-# model_id = "stabilityai/stable-diffusion-2-1-base"
-# scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
-# pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
+# # model_id = "stabilityai/stable-diffusion-2-1-base"
+# # scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
+# # pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
 
 pipe.safety_checker = None
 # pipe.to("cuda")
 # pipe.enable_xformers_memory_efficient_attention()
+
+torch.manual_seed(1791574510)
 
 if bind_params:
     clip = tvm.runtime.load_module("clip.so")
@@ -288,10 +292,12 @@ else:
         pipe, clip, unet, vae, clip_params, unet_params, vae_params
     )
 
-prompt = "Mt. Fuji in the style of Gauguin"
+prompt = "a cute kitten made out of metal, (cyborg:1.1), ([tail | detailed wire]:1.3), (intricate details), hdr, (intricate details, hyperdetailed:1.2), cinematic shot, vignette, centered"
+
+negative_prompt = "(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, flowers, human, man, woman"
 
 t1 = time.time()
-sample = pipe_tvm(prompt, num_inference_steps=50)["images"][0]
+sample = pipe_tvm(prompt, negative_prompt=negative_prompt, num_inference_steps=26, guidance_scale=6.5)["images"][0]
 t2 = time.time()
 
 sample.save("out.png")

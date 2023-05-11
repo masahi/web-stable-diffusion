@@ -240,7 +240,7 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 
 bind_params = False
-verify = True
+verify = False
 combine_matmul = True
 
 model = "unet"
