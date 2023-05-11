@@ -227,8 +227,8 @@ bind_params = True
 
 # pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 
-model_id = "/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/1f758383196d38df1dfe523ddb1030f2bfab7741"
-scheduler = EulerDiscreteScheduler.from_pretrained("/home/masa/.cache/huggingface/hub/models--stabilityai--stable-diffusion-2-1-base/snapshots/88bb1a46821197d1ac0cb54d1d09fb6e70b171bc", subfolder="scheduler")
+model_id = "stabilityai/stable-diffusion-2-1-base"
+scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
 pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
 
 pipe.safety_checker = None
