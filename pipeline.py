@@ -1,9 +1,9 @@
+import re
 import torch
 from torch.utils.dlpack import to_dlpack, from_dlpack
 
 import numpy as np
 
-import pickle
 import time
 import inspect
 from typing import List, Optional, Union
@@ -16,6 +16,7 @@ from diffusers import (
     StableDiffusionPipeline,
     EulerDiscreteScheduler,
     EulerAncestralDiscreteScheduler,
+    DPMSolverMultistepScheduler,
 )
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
@@ -197,10 +198,11 @@ class StableDiffusionTVMPipeline:
                 latents_input, t, encoder_hidden_states=text_embeddings
             )
 
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (
-                noise_pred_text - noise_pred_uncond
-            )
+            if do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (
+                    noise_pred_text - noise_pred_uncond
+                )
 
             latents = self.scheduler.step(
                 noise_pred, t, latents, **extra_step_kwargs
@@ -220,13 +222,10 @@ class StableDiffusionTVMPipeline:
 
 
 def test(model):
-    hidden_dim = 1024
-    so_name = "{}.so".format(model)
-    ex = tvm.runtime.load_module(so_name)
-
+    hidden_dim = 768
     target = tvm.target.Target("nvidia/geforce-rtx-3070")
-
     dev = tvm.device(target.kind.name, 0)
+
     inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
     inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
     inp_2 = tvm.nd.array(np.random.randn(2, 77, hidden_dim).astype("float32"), dev)
@@ -242,7 +241,14 @@ def test(model):
             )
         ]
 
+    # so_name = "{}.so".format(model)
+    # ex = tvm.runtime.load_module(so_name)
+    # vm = relax.VirtualMachine(ex, dev, profile=True)
+
+    ex, params = load_model_and_params(model)
     vm = relax.VirtualMachine(ex, dev, profile=True)
+    transformed_params = transform_params(vm, params, dev)
+    inputs.append(transformed_params)
 
     print(vm.profile("main", *inputs))
 
@@ -264,18 +270,32 @@ bind_params = False
 
 # test("unet")
 
-pipe = StableDiffusionPipeline.from_pretrained("XpucT/Deliberate")
-pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+
+pipe.unet.load_attn_procs("pcuenq/pokemon-lora")
+
+lora_weights = {}
+
+for k, v in pipe.unet.state_dict().items():
+    if "lora" in k:
+        lora_weights[k] = v
+
+# for k, v in lora_weights.items():
+#     print(k, v.shape)
+
+# pipe = StableDiffusionPipeline.from_pretrained("XpucT/Deliberate")
+# pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+# torch.manual_seed(1791574510)
 
 # # model_id = "stabilityai/stable-diffusion-2-1-base"
 # # scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
-# # pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler )
+# # pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler)
 
 pipe.safety_checker = None
 # pipe.to("cuda")
 # pipe.enable_xformers_memory_efficient_attention()
 
-torch.manual_seed(1791574510)
 
 if bind_params:
     clip = tvm.runtime.load_module("clip.so")
@@ -285,19 +305,71 @@ if bind_params:
     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
 else:
     clip, clip_params = load_model_and_params("clip")
-    unet, unet_params = load_model_and_params("unet")
     vae, vae_params = load_model_and_params("vae")
+    # unet, unet_params = load_model_and_params("unet")
+
+    param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
+
+    names = param_dict.keys()
+    sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
+    unet = tvm.runtime.load_module("unet_no_params.so")
+
+    attention_weights = {}
+
+    for k, v in param_dict.items():
+        if "transformer_blocks" in k and not "norm" in k:
+            attention_weights[k] = v
+
+    unet_params = []
+
+    for name in sorted_names:
+        if "transformer_blocks" in name and "to_" in name and not "bias" in name:
+            if "mid" in name:
+                match = re.findall(
+                    "unet.mid_block.attentions.(\d).transformer_blocks.0.attn(\d).to_([a-z]+)",
+                    name,
+                )
+                assert match
+                attn_id, attn_inner_id, matmul_kind = match[0]
+                lora_param_name_down = f"mid_block.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.down.weight"
+                lora_param_name_up = f"mid_block.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.up.weight"
+
+                assert lora_param_name_down in lora_weights
+                assert lora_param_name_up in lora_weights
+            else:
+                match = re.findall(
+                    "unet.([a-z]+)_blocks.(\d).attentions.(\d).transformer_blocks.0.attn(\d).to_([a-z]+)",
+                    name,
+                )
+                assert match
+                block_kind, block_id, attn_id, attn_inner_id, matmul_kind = match[0]
+
+                # print(block_kind, block_id, attn_id, attn_inner_id, matmul_kind)
+                lora_param_name_down = f"{block_kind}_blocks.{block_id}.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.down.weight"
+                lora_param_name_up = f"{block_kind}_blocks.{block_id}.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.up.weight"
+
+                assert lora_param_name_down in lora_weights
+                assert lora_param_name_up in lora_weights
+
+            lora_down = lora_weights[lora_param_name_down].numpy()
+            lora_up = lora_weights[lora_param_name_up].numpy()
+            orig_param = param_dict[name]
+            unet_params.append(
+                tvm.nd.array(
+                    orig_param.numpy() + np.dot(lora_up, lora_down).astype("float16")
+                )
+            )
+        else:
+            unet_params.append(param_dict[name])
 
     pipe_tvm = StableDiffusionTVMPipeline(
         pipe, clip, unet, vae, clip_params, unet_params, vae_params
     )
 
-prompt = "a cute kitten made out of metal, (cyborg:1.1), ([tail | detailed wire]:1.3), (intricate details), hdr, (intricate details, hyperdetailed:1.2), cinematic shot, vignette, centered"
-
-negative_prompt = "(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, flowers, human, man, woman"
-
 t1 = time.time()
-sample = pipe_tvm(prompt, negative_prompt=negative_prompt, num_inference_steps=26, guidance_scale=6.5)["images"][0]
+sample = pipe_tvm("Green pokemon with menacing face", num_inference_steps=25)["images"][
+    0
+]
 t2 = time.time()
 
 sample.save("out.png")
