@@ -30,10 +30,10 @@ def get_timestep_embedding(
     # assert len(timesteps.shape) == 1, "Timesteps should be a 1d-array"
 
     half_dim = embedding_dim // 2
-    exponent = -math.log(max_period) * torch.arange(
+    exponent = torch.tensor(-math.log(max_period)) * torch.arange(
         start=0, end=half_dim, dtype=torch.float32, device=device
     )
-    exponent = exponent / (half_dim - downscale_freq_shift)
+    exponent = exponent / torch.tensor(float(half_dim) - downscale_freq_shift)
 
     emb = torch.exp(exponent)
     emb = timesteps[:, None].float() * emb[None, :]
@@ -55,7 +55,7 @@ def get_timestep_embedding(
 
 
 class TimestepEmbedding(nn.Module):
-    def __init__(self, channel: int, time_embed_dim: int, act_fn: str = "silu"):
+    def __init__(self, channel: int, time_embed_dim: int, act_fn: str = "silu", cond_proj_dim=None):
         super().__init__()
 
         self.linear_1 = nn.Linear(channel, time_embed_dim)
@@ -64,13 +64,22 @@ class TimestepEmbedding(nn.Module):
             self.act = nn.SiLU()
         self.linear_2 = nn.Linear(time_embed_dim, time_embed_dim)
 
-    def forward(self, sample):
+        if cond_proj_dim is not None:
+            self.cond_proj = nn.Linear(cond_proj_dim, in_channels, bias=False)
+        else:
+            self.cond_proj = None
+
+    def forward(self, sample, condition=None):
+        if condition is not None:
+            sample = sample + self.cond_proj(condition)
+
         sample = self.linear_1(sample)
 
         if self.act is not None:
             sample = self.act(sample)
 
         sample = self.linear_2(sample)
+
         return sample
 
 
@@ -282,6 +291,8 @@ class TVMUNet2DConditionModel(nn.Module):
         sample: torch.FloatTensor,
         timestep: Union[torch.Tensor, float, int],
         encoder_hidden_states: torch.Tensor,
+        down_block_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
+        mid_block_additional_residual: Optional[torch.Tensor] = None,
         # return_dict: bool = True,
     ):
         """r
@@ -324,10 +335,24 @@ class TVMUNet2DConditionModel(nn.Module):
 
             down_block_res_samples += res_samples
 
+        if down_block_additional_residuals is not None:
+            new_down_block_res_samples = ()
+
+            for down_block_res_sample, down_block_additional_residual in zip(
+                down_block_res_samples, down_block_additional_residuals
+            ):
+                down_block_res_sample = down_block_res_sample + down_block_additional_residual
+                new_down_block_res_samples = new_down_block_res_samples + (down_block_res_sample,)
+
+            down_block_res_samples = new_down_block_res_samples
+
         # 4. mid
         sample = self.mid_block(
             sample, emb, encoder_hidden_states=encoder_hidden_states
         )
+
+        if mid_block_additional_residual is not None:
+            sample = sample + mid_block_additional_residual
 
         # 5. up
         for i, upsample_block in enumerate(self.up_blocks):

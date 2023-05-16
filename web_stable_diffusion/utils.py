@@ -16,6 +16,22 @@ def detect_available_torch_device() -> str:
     raise ValueError("At least one GPU backend is expected to be enabled")
 
 
+def convert_unet_params(state_dict):
+    model_dict = {}
+    for name, tensor in state_dict.items():
+        if name.endswith("ff.net.0.proj.weight") or name.endswith("ff.net.0.proj.bias"):
+            w1, w2 = tensor.chunk(2, dim=0)
+            model_dict[name.replace("proj", "proj1")] = w1
+            model_dict[name.replace("proj", "proj2")] = w2
+        elif (name.endswith("proj_in.weight") or name.endswith("proj_out.weight")) and len(tensor.shape) == 2:
+            # Convert Linear weights to 1x1 conv2d weights. This is necessary for SD v2 which uses
+            # use_linear_projection = True.
+            model_dict[name] = torch.unsqueeze(torch.unsqueeze(tensor, -1), -1)
+        else:
+            model_dict[name] = tensor
+    return model_dict
+
+
 def get_unet(
     pipe,
     device_str: str,
@@ -31,20 +47,7 @@ def get_unet(
         device=device_str,
     )
     pt_model_dict = pipe.unet.state_dict()
-    model_dict = {}
-    for name, tensor in pt_model_dict.items():
-        if name.endswith("ff.net.0.proj.weight") or name.endswith("ff.net.0.proj.bias"):
-            w1, w2 = tensor.chunk(2, dim=0)
-            model_dict[name.replace("proj", "proj1")] = w1
-            model_dict[name.replace("proj", "proj2")] = w2
-            continue
-        if (name.endswith("proj_in.weight") or name.endswith("proj_out.weight")) and len(tensor.shape) == 2:
-            # Convert Linear weights to 1x1 conv2d weights. This is necessary for SD v2 which uses
-            # use_linear_projection = True.
-            model_dict[name] = torch.unsqueeze(torch.unsqueeze(tensor, -1), -1)
-            continue
-        model_dict[name] = tensor
-    model.load_state_dict(model_dict)
+    model.load_state_dict(convert_unet_params(pt_model_dict))
     return model
 
 

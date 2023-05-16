@@ -318,13 +318,13 @@ class DownBlock2D(nn.Module):
 
         for resnet in self.resnets:
             hidden_states = resnet(hidden_states, temb)
-            output_states += (hidden_states,)
+            output_states = output_states + (hidden_states,)
 
         if self.downsamplers is not None:
             for downsampler in self.downsamplers:
                 hidden_states = downsampler(hidden_states)
 
-            output_states += (hidden_states,)
+            output_states = output_states + (hidden_states,)
 
         return hidden_states, output_states
 
@@ -354,6 +354,7 @@ class CrossAttnDownBlock2D(nn.Module):
         resnets = []
         attentions = []
 
+        self.has_cross_attention = True
         self.attention_type = attention_type
         self.attn_num_head_channels = attn_num_head_channels
 
@@ -408,13 +409,13 @@ class CrossAttnDownBlock2D(nn.Module):
         for resnet, attn in zip(self.resnets, self.attentions):
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(hidden_states, context=encoder_hidden_states)
-            output_states += (hidden_states,)
+            output_states = output_states + (hidden_states,)
 
         if self.downsamplers is not None:
             for downsampler in self.downsamplers:
                 hidden_states = downsampler(hidden_states)
 
-            output_states += (hidden_states,)
+            output_states = output_states + (hidden_states,)
 
         return hidden_states, output_states
 
