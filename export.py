@@ -26,7 +26,7 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained("runwayml/stable-diffus
 
 clip, params_clip = detach_params(trace.clip_to_text_embeddings(pipe))
 vae, params_vae = detach_params(trace.vae_to_image(pipe))
-unet, params_unet = detach_params(trace.unet_latents_to_noise_pred_controlnet(pipe, "mps"))
+unet, params_unet = detach_params(trace.unet_latents_to_noise_pred_controlnet(pipe, "cuda"))
 controlnet, params_controlnet = detach_params(trace.convert_controlnet(pipe))
 
 serialize(clip, params_clip, "clip")

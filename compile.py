@@ -182,13 +182,13 @@ def run_lower_passes(mod, target, tune=False):
         else:
             work_dir = "work"
             with target:
-                # passes.append(relax.transform.MetaScheduleTuneIRMod(
-                #     params={},
-                #     work_dir=work_dir,
-                #     max_trials_global=1500,
-                #     # max_trials_per_task=50,
-                #     # op_names=["group_norm"]
-                # ))
+                passes.append(relax.transform.MetaScheduleTuneIRMod(
+                    params={},
+                    work_dir=work_dir,
+                    max_trials_global=1500,
+                    # max_trials_per_task=50,
+                    # op_names=["group_norm"]
+                ))
                 passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
                 passes.append(tir.transform.DefaultGPUSchedule())
 
@@ -241,9 +241,9 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 bind_params = False
 verify = False
-combine_matmul = True
+combine_matmul = False  # TODO
 
-model = "unet"
+model = "controlnet"
 # hidden_dim = 1024 # for v2.1
 hidden_dim = 768  # for v1.5
 
@@ -256,12 +256,47 @@ target = tvm.target.Target("nvidia/geforce-rtx-3070")
 # target = tvm.target.Target("llvm")
 
 dev = tvm.device(target.kind.name, 0)
-inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
+inp_0 = tvm.nd.array(np.random.randn(2, 4, 64, 64).astype("float32"), dev)
 inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
 inp_2 = tvm.nd.array(np.random.randn(2, 77, hidden_dim).astype("float32"), dev)
 
 if model == "unet":
-    inputs = [inp_0, inp_1, inp_2]
+    down_block_additional_residuals_shapes = (
+        (2, 320, 64, 64),
+        (2, 320, 64, 64),
+        (2, 320, 64, 64),
+        (2, 320, 32, 32),
+        (2, 640, 32, 32),
+        (2, 640, 32, 32),
+        (2, 640, 16, 16),
+        (2, 1280, 16, 16),
+        (2, 1280, 16, 16),
+        (2, 1280, 8, 8),
+        (2, 1280, 8, 8),
+        (2, 1280, 8, 8),
+    )
+    down_block_additional_residuals = (
+        tvm.nd.array(np.random.randn(*shape).astype("float32"), dev)
+        for shape in down_block_additional_residuals_shapes
+    )
+    mid_block_additional_residual = tvm.nd.array(
+        np.random.randn(2, 1280, 8, 8).astype("float32"), dev
+    )
+    inputs = [
+        inp_0,
+        inp_1,
+        inp_2,
+        down_block_additional_residuals,
+        mid_block_additional_residual,
+    ]
+elif model == "controlnet":
+    sample = inp_0
+    timestep = inp_1
+    encoder_hidden_states = inp_2
+    controlnet_cond = tvm.nd.array(
+        np.random.randn(2, 3, 512, 512).astype("float32"), dev
+    )
+    inputs = [sample, timestep, encoder_hidden_states, controlnet_cond]
 elif model == "vae":
     inputs = [inp_0]
 else:
