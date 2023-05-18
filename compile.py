@@ -188,13 +188,13 @@ def run_lower_passes(mod, target, tune=False):
         else:
             work_dir = "work"
             with target:
-                passes.append(relax.transform.MetaScheduleTuneIRMod(
-                    params={},
-                    work_dir=work_dir,
-                    max_trials_global=1500,
-                    # max_trials_per_task=50,
-                    # op_names=["group_norm"]
-                ))
+                # passes.append(relax.transform.MetaScheduleTuneIRMod(
+                #     params={},
+                #     work_dir=work_dir,
+                #     max_trials_global=1500,
+                #     # max_trials_per_task=50,
+                #     # op_names=["group_norm"]
+                # ))
                 passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
                 passes.append(tir.transform.DefaultGPUSchedule())
 
@@ -249,7 +249,7 @@ bind_params = False
 verify = False
 combine_matmul = True  # TODO
 
-model = "controlnet"
+model = "vae"
 # hidden_dim = 1024 # for v2.1
 hidden_dim = 768  # for v1.5
 

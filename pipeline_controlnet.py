@@ -21,6 +21,8 @@ from diffusers import (
     StableDiffusionControlNetPipeline,
     ControlNetModel,
 )
+from diffusers.utils import PIL_INTERPOLATION
+
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.utils import load_image
 
@@ -88,7 +90,7 @@ class StableDiffusionTVMPipeline:
             convert_to_ndarray(latent_model_input),
             tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
             convert_to_ndarray(encoder_hidden_states),
-            (convert_to_ndarray(sample) for sample in down_block_res_samples),
+            tuple(convert_to_ndarray(sample) for sample in down_block_res_samples),
             convert_to_ndarray(mid_block_res_sample),
         ]
 
@@ -125,7 +127,7 @@ class StableDiffusionTVMPipeline:
         assert controlnet_conditioning_scale == 1
         inputs = [
             convert_to_ndarray(latent_model_input),
-            tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
+            tvm.nd.array(timesteps.numpy().astype("int64"), self.dev),
             convert_to_ndarray(text_embeddings),
             convert_to_ndarray(image),
         ]
@@ -133,7 +135,9 @@ class StableDiffusionTVMPipeline:
         if self.controlnet_params:
             inputs.append(self.controlnet_params)
 
-        return from_dlpack(self.controlnet["main"](*inputs))
+        out = self.controlnet["main"](*inputs)
+        down_block_res_samples, mid_block_res_sample = out[0:-1], out[-1]
+        return (from_dlpack(arr) for arr in down_block_res_samples), from_dlpack(mid_block_res_sample)
 
     def prepare_image(
         self,
@@ -279,7 +283,7 @@ class StableDiffusionTVMPipeline:
             batch_size=batch_size,
             num_images_per_prompt=1,
             device="cuda",
-            dtype="float16",
+            dtype=torch.float32, # TODO
             do_classifier_free_guidance=do_classifier_free_guidance,
         )
 
@@ -302,6 +306,8 @@ class StableDiffusionTVMPipeline:
 
         assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
 
+        import time
+
         for _, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
@@ -311,6 +317,7 @@ class StableDiffusionTVMPipeline:
 
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+            # t1 = time.time()
             down_block_res_samples, mid_block_res_sample = self.controlnet_inference(
                 latent_model_input,
                 t,
@@ -318,7 +325,9 @@ class StableDiffusionTVMPipeline:
                 image,
                 controlnet_conditioning_scale,
             )
+            # print("controlnet:", time.time() - t1)
 
+            # t1 = time.time()
             noise_pred = self.unet_inference(
                 latent_model_input,
                 t,
@@ -326,6 +335,7 @@ class StableDiffusionTVMPipeline:
                 down_block_res_samples,
                 mid_block_res_sample,
             )
+            # print("unet:", time.time() - t1)
 
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
@@ -414,7 +424,7 @@ prompt = "bird"
 init_image = get_init_image()
 
 t1 = time.time()
-sample = pipe(prompt=prompt, image=init_image, num_inference_steps=25)["images"][0]
+sample = pipe_tvm(prompt=prompt, image=init_image, num_inference_steps=25)["images"][0]
 t2 = time.time()
 
 sample.save("out.png")
