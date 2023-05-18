@@ -92,7 +92,7 @@ def simplify_stride_slice(f):
     return rewrite_call(pattern, callback, f)
 
 
-def combine_parallel_matmul(f, num_branches, slice_axis=2):
+def combine_parallel_matmul(f, num_branches):
     with PatternContext() as ctx:
         inp_pat = wildcard()
 
@@ -120,6 +120,13 @@ def combine_parallel_matmul(f, num_branches, slice_axis=2):
             ind += width
             sections.append(int(ind))
 
+        if len(inp.struct_info.shape) == 3:
+            slice_axis = 2
+        elif len(inp.struct_info.shape) == 2:
+            slice_axis = 1
+        else:
+            assert False
+
         chunks = R.split(matmul, sections, slice_axis)
 
         for i, matmul_pat in enumerate(matmul_patterns):
@@ -139,8 +146,7 @@ def get_rewrite_pass(combine_matmul=False):
         mod["main"] = simplify_stride_slice(mod["main"])
 
         if combine_matmul:
-            mod["main"] = combine_parallel_matmul(mod["main"], 32)
-            mod["main"] = combine_parallel_matmul(mod["main"], 22, slice_axis=1)
+            mod["main"] = combine_parallel_matmul(mod["main"], 14)
             mod["main"] = combine_parallel_matmul(mod["main"], 3)
 
         return mod
@@ -241,7 +247,7 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 bind_params = False
 verify = False
-combine_matmul = False  # TODO
+combine_matmul = True  # TODO
 
 model = "controlnet"
 # hidden_dim = 1024 # for v2.1

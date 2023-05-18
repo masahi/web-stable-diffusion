@@ -362,7 +362,7 @@ def load_model_and_params(prefix):
 
 def get_init_image():
     image = load_image(
-        "https://huggingface.co/lllyasviel/sd-controlnet-hed/resolve/main/images/bird.png"
+        "https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/images/bird.png"
     )
     image = np.array(image)
 
