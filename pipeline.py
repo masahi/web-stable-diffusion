@@ -266,23 +266,14 @@ def load_model_and_params(prefix):
     return mod, [param_dict[name] for name in sorted_names]
 
 
-bind_params = False
+bind_params = True
 
 # test("unet")
 
 pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
-pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+# pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 
 pipe.unet.load_attn_procs("pcuenq/pokemon-lora")
-
-lora_weights = {}
-
-for k, v in pipe.unet.state_dict().items():
-    if "lora" in k:
-        lora_weights[k] = v
-
-# for k, v in lora_weights.items():
-#     print(k, v.shape)
 
 # pipe = StableDiffusionPipeline.from_pretrained("XpucT/Deliberate")
 # pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
@@ -306,68 +297,70 @@ if bind_params:
 else:
     clip, clip_params = load_model_and_params("clip")
     vae, vae_params = load_model_and_params("vae")
-    # unet, unet_params = load_model_and_params("unet")
+    unet, unet_params = load_model_and_params("unet")
 
-    param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
+    # param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
 
-    names = param_dict.keys()
-    sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
-    unet = tvm.runtime.load_module("unet_no_params.so")
+    # names = param_dict.keys()
+    # sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
+    # unet = tvm.runtime.load_module("unet_no_params.so")
 
-    attention_weights = {}
+    # attention_weights = {}
 
-    for k, v in param_dict.items():
-        if "transformer_blocks" in k and not "norm" in k:
-            attention_weights[k] = v
+    # for k, v in param_dict.items():
+    #     if "transformer_blocks" in k and not "norm" in k:
+    #         attention_weights[k] = v
 
-    unet_params = []
+    # unet_params = []
 
-    for name in sorted_names:
-        if "transformer_blocks" in name and "to_" in name and not "bias" in name:
-            if "mid" in name:
-                match = re.findall(
-                    "unet.mid_block.attentions.(\d).transformer_blocks.0.attn(\d).to_([a-z]+)",
-                    name,
-                )
-                assert match
-                attn_id, attn_inner_id, matmul_kind = match[0]
-                lora_param_name_down = f"mid_block.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.down.weight"
-                lora_param_name_up = f"mid_block.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.up.weight"
+    # for name in sorted_names:
+    #     if "transformer_blocks" in name and "to_" in name and not "bias" in name:
+    #         if "mid" in name:
+    #             match = re.findall(
+    #                 "unet.mid_block.attentions.(\d).transformer_blocks.0.attn(\d).to_([a-z]+)",
+    #                 name,
+    #             )
+    #             assert match
+    #             attn_id, attn_inner_id, matmul_kind = match[0]
+    #             lora_param_name_down = f"mid_block.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.down.weight"
+    #             lora_param_name_up = f"mid_block.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.up.weight"
 
-                assert lora_param_name_down in lora_weights
-                assert lora_param_name_up in lora_weights
-            else:
-                match = re.findall(
-                    "unet.([a-z]+)_blocks.(\d).attentions.(\d).transformer_blocks.0.attn(\d).to_([a-z]+)",
-                    name,
-                )
-                assert match
-                block_kind, block_id, attn_id, attn_inner_id, matmul_kind = match[0]
+    #             assert lora_param_name_down in lora_weights
+    #             assert lora_param_name_up in lora_weights
+    #         else:
+    #             match = re.findall(
+    #                 "unet.([a-z]+)_blocks.(\d).attentions.(\d).transformer_blocks.0.attn(\d).to_([a-z]+)",
+    #                 name,
+    #             )
+    #             assert match
+    #             block_kind, block_id, attn_id, attn_inner_id, matmul_kind = match[0]
 
-                # print(block_kind, block_id, attn_id, attn_inner_id, matmul_kind)
-                lora_param_name_down = f"{block_kind}_blocks.{block_id}.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.down.weight"
-                lora_param_name_up = f"{block_kind}_blocks.{block_id}.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.up.weight"
+    #             # print(block_kind, block_id, attn_id, attn_inner_id, matmul_kind)
+    #             lora_param_name_down = f"{block_kind}_blocks.{block_id}.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.down.weight"
+    #             lora_param_name_up = f"{block_kind}_blocks.{block_id}.attentions.{attn_id}.transformer_blocks.0.attn{attn_inner_id}.processor.to_{matmul_kind}_lora.up.weight"
 
-                assert lora_param_name_down in lora_weights
-                assert lora_param_name_up in lora_weights
+    #             assert lora_param_name_down in lora_weights
+    #             assert lora_param_name_up in lora_weights
 
-            lora_down = lora_weights[lora_param_name_down].numpy()
-            lora_up = lora_weights[lora_param_name_up].numpy()
-            orig_param = param_dict[name]
-            unet_params.append(
-                tvm.nd.array(
-                    orig_param.numpy() + np.dot(lora_up, lora_down).astype("float16")
-                )
-            )
-        else:
-            unet_params.append(param_dict[name])
+    #         lora_down = lora_weights[lora_param_name_down].numpy()
+    #         lora_up = lora_weights[lora_param_name_up].numpy()
+    #         orig_param = param_dict[name]
+    #         unet_params.append(
+    #             tvm.nd.array(
+    #                 orig_param.numpy() + np.dot(lora_up, lora_down).astype("float16")
+    #             )
+    #         )
+    #     else:
+    #         unet_params.append(param_dict[name])
 
     pipe_tvm = StableDiffusionTVMPipeline(
         pipe, clip, unet, vae, clip_params, unet_params, vae_params
     )
 
+prompt = "Mt. Fuji in the style of Gauguin"
+
 t1 = time.time()
-sample = pipe_tvm("Green pokemon with menacing face", num_inference_steps=25)["images"][
+sample = pipe_tvm(prompt, num_inference_steps=50)["images"][
     0
 ]
 t2 = time.time()

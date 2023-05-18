@@ -17,15 +17,15 @@ def serialize(mod, params, prefix):
     tvm.runtime.save_param_dict_to_file(params_dict, "{}.params".format(prefix))
 
 
-# pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
 
-model_id = "stabilityai/stable-diffusion-2-1-base"
-scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
-pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler)
+# model_id = "stabilityai/stable-diffusion-2-1-base"
+# scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
+# pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler)
 
 clip, params_clip = detach_params(trace.clip_to_text_embeddings(pipe))
 vae, params_vae = detach_params(trace.vae_to_image(pipe))
-unet, params_unet = detach_params(trace.unet_latents_to_noise_pred(pipe, "mps"))
+unet, params_unet = detach_params(trace.unet_latents_to_noise_pred(pipe, "cuda"))
 
 serialize(clip, params_clip, "clip")
 serialize(vae, params_vae, "vae")

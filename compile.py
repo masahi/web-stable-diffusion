@@ -186,7 +186,7 @@ def run_lower_passes(mod, target, tune=False):
                 #     params={},
                 #     work_dir=work_dir,
                 #     max_trials_global=1500,
-                #     # max_trials_per_task=50,
+                #     max_trials_per_task=50,
                 #     # op_names=["group_norm"]
                 # ))
                 passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
@@ -239,8 +239,8 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
     return get_result(ex, dev, inputs)
 
 
-bind_params = False
-verify = False
+bind_params = True
+verify = True
 combine_matmul = True
 
 model = "unet"
