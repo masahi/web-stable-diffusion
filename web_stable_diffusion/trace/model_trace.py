@@ -69,27 +69,6 @@ def unet_latents_to_noise_pred(pipe, device_str: str) -> tvm.IRModule:
 
 
 def unet_latents_to_noise_pred_controlnet(pipe, device_str: str) -> tvm.IRModule:
-    class UNetModelWrapper(torch.nn.Module):
-        def __init__(self, unet):
-            super().__init__()
-            self.unet = unet
-
-        def forward(
-            self,
-            latents,
-            timestep_tensor,
-            text_embeddings,
-            down_block_additional_residuals,
-            mid_block_additional_residual,
-        ):
-            return self.unet(
-                latents,
-                timestep_tensor,
-                text_embeddings,
-                down_block_additional_residuals,
-                mid_block_additional_residual,
-            )
-
     hidden_size = pipe.unet.config.cross_attention_dim
     attention_head_dim = pipe.unet.config.attention_head_dim
     use_linear_projection = pipe.unet.config.get("use_linear_projection")
@@ -101,8 +80,6 @@ def unet_latents_to_noise_pred_controlnet(pipe, device_str: str) -> tvm.IRModule
         attention_head_dim=attention_head_dim,
         use_linear_projection=use_linear_projection,
     )
-
-    unet_to_noise_pred = UNetModelWrapper(unet)
 
     down_block_additional_residuals_shape_dtype = (
         ((2, 320, 64, 64), "float32"),
@@ -126,7 +103,7 @@ def unet_latents_to_noise_pred_controlnet(pipe, device_str: str) -> tvm.IRModule
         )
     }
 
-    graph = fx.symbolic_trace(unet_to_noise_pred, concrete_args=concrete_args)
+    graph = fx.symbolic_trace(unet, concrete_args=concrete_args)
 
     mod = from_fx(
         graph,
