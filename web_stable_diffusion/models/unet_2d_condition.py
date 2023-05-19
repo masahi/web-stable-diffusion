@@ -31,7 +31,7 @@ def get_timestep_embedding(
 
     half_dim = embedding_dim // 2
     exponent = torch.tensor(-math.log(max_period)) * torch.arange(
-        start=0, end=half_dim, dtype=torch.float32, device=device
+        start=0, end=half_dim, dtype=torch.float32
     )
     exponent = exponent / torch.tensor(float(half_dim) - downscale_freq_shift)
 

@@ -69,6 +69,27 @@ def unet_latents_to_noise_pred(pipe, device_str: str) -> tvm.IRModule:
 
 
 def unet_latents_to_noise_pred_controlnet(pipe, device_str: str) -> tvm.IRModule:
+    class UNetModelWrapper(torch.nn.Module):
+        def __init__(self, unet):
+            super().__init__()
+            self.unet = unet
+
+        def forward(
+            self,
+            sample,
+            timestep,
+            encoder_hidden_states,
+            down_block_res_samples,
+            mid_block_res_sample,
+        ):
+            return self.unet(
+                sample,
+                timestep,
+                encoder_hidden_states,
+                down_block_additional_residuals=down_block_res_samples,
+                mid_block_additional_residual=mid_block_res_sample,
+            )
+
     hidden_size = pipe.unet.config.cross_attention_dim
     attention_head_dim = pipe.unet.config.attention_head_dim
     use_linear_projection = pipe.unet.config.get("use_linear_projection")
@@ -81,42 +102,42 @@ def unet_latents_to_noise_pred_controlnet(pipe, device_str: str) -> tvm.IRModule
         use_linear_projection=use_linear_projection,
     )
 
-    down_block_additional_residuals_shape_dtype = (
-        ((2, 320, 64, 64), "float32"),
-        ((2, 320, 64, 64), "float32"),
-        ((2, 320, 64, 64), "float32"),
-        ((2, 320, 32, 32), "float32"),
-        ((2, 640, 32, 32), "float32"),
-        ((2, 640, 32, 32), "float32"),
-        ((2, 640, 16, 16), "float32"),
-        ((2, 1280, 16, 16), "float32"),
-        ((2, 1280, 16, 16), "float32"),
-        ((2, 1280, 8, 8), "float32"),
-        ((2, 1280, 8, 8), "float32"),
-        ((2, 1280, 8, 8), "float32"),
+    down_block_additional_residuals_shape = (
+        (2, 320, 64, 64),
+        (2, 320, 64, 64),
+        (2, 320, 64, 64),
+        (2, 320, 32, 32),
+        (2, 640, 32, 32),
+        (2, 640, 32, 32),
+        (2, 640, 16, 16),
+        (2, 1280, 16, 16),
+        (2, 1280, 16, 16),
+        (2, 1280, 8, 8),
+        (2, 1280, 8, 8),
+        (2, 1280, 8, 8),
     )
 
-    concrete_args = {
-        "down_block_additional_residuals": (
-            torch.rand(shape)
-            for shape, _ in down_block_additional_residuals_shape_dtype
-        )
-    }
+    sample = torch.randn((2, 4, 64, 64))
+    timestep = torch.tensor(1)
+    encoder_hidden_states = torch.randn((2, 77, hidden_size))
+    down_block_res_samples = tuple(
+        torch.rand(shape) for shape in down_block_additional_residuals_shape
+    )
+    mid_block_res_sample = torch.randn((2, 1280, 8, 8))
 
-    graph = fx.symbolic_trace(unet, concrete_args=concrete_args)
-
-    mod = from_fx(
-        graph,
-        [
-            ((2, 4, 64, 64), "float32"),
-            ((), "int32"),
-            ((2, 77, hidden_size), "float32"),
-            down_block_additional_residuals_shape_dtype,
-            ((2, 1280, 8, 8), "float32"),
-        ],
+    mod = dynamo_capture_subgraphs(
+        unet.forward,
+        sample,
+        timestep,
+        encoder_hidden_states,
+        down_block_res_samples,
+        mid_block_res_sample,
         keep_params_as_input=True,
     )
-    return tvm.IRModule({"unet": mod["main"]})
+
+    assert len(mod.functions) == 1
+
+    return tvm.IRModule({"unet": mod["subgraph_0"]})
 
 
 def convert_controlnet(pipe) -> tvm.IRModule:
@@ -126,7 +147,9 @@ def convert_controlnet(pipe) -> tvm.IRModule:
 
     model_dict = utils.convert_unet_params(controlnet_orig.state_dict())
 
-    controlnet = ControlNetModel(cross_attention_dim=hidden_size, attention_head_dim=attention_head_dim)
+    controlnet = ControlNetModel(
+        cross_attention_dim=hidden_size, attention_head_dim=attention_head_dim
+    )
     controlnet.load_state_dict(model_dict)
 
     sample = torch.randn((2, 4, 64, 64))
