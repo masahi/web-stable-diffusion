@@ -127,8 +127,11 @@ class StableDiffusionTVMPipeline:
         **kwargs,
     ):
         batch_size = 1
+        do_classifier_free_guidance = guidance_scale > 1.0
         assert height == 512 and width == 512
         assert controlnet_conditioning_scale == 1
+        assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
+        assert do_classifier_free_guidance, "Not implemeted"
 
         text_input = self.tokenizer(
             prompt,
@@ -139,9 +142,6 @@ class StableDiffusionTVMPipeline:
         )
 
         text_embeddings = self.clip_inference(text_input.input_ids.to("cuda"))
-
-        do_classifier_free_guidance = guidance_scale > 1.0
-        assert do_classifier_free_guidance, "Not implemeted"
 
         # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance:
@@ -216,16 +216,10 @@ class StableDiffusionTVMPipeline:
         if accepts_generator:
             extra_step_kwargs["generator"] = generator
 
-        assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
-
         for _, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
-            latent_model_input = (
-                torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-            )
-
-            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+            latent_model_input = self.scheduler.scale_model_input(latents, t)
 
             noise_pred = self.unet_inference(
                 latent_model_input,

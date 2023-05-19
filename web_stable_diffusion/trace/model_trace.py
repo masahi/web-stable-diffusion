@@ -42,7 +42,6 @@ def unet_latents_to_noise_pred(pipe, device_str: str) -> tvm.IRModule:
             self.unet = unet
 
         def forward(self, latents, timestep_tensor, text_embeddings):
-            # TODO: do concat in torch
             latent_model_input = torch.cat([latents] * 2, dim=0)
             return self.unet(latent_model_input, timestep_tensor, text_embeddings)
 
@@ -83,6 +82,8 @@ def unet_latents_to_noise_pred_controlnet(pipe, device_str: str) -> tvm.IRModule
             image,
         ):
             controlnet_conditioning_scale = 1  # TODO
+            sample = torch.cat([sample] * 2, dim=0)
+
             down_block_res_samples, mid_block_res_sample = self.controlnet(
                 sample,
                 timestep,
@@ -119,7 +120,7 @@ def unet_latents_to_noise_pred_controlnet(pipe, device_str: str) -> tvm.IRModule
         use_linear_projection=use_linear_projection,
     )
 
-    sample = torch.randn((2, 4, 64, 64))
+    sample = torch.randn((1, 4, 64, 64))
     timestep = torch.tensor(1)
     encoder_hidden_states = torch.randn((2, 77, hidden_size))
     controlnet_cond = torch.randn((2, 3, 512, 512))
