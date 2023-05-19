@@ -46,11 +46,9 @@ class StableDiffusionTVMPipeline:
         text_encoder,
         unet,
         vae,
-        controlnet,
         clip_params=None,
         unet_params=None,
         vae_params=None,
-        controlnet_params=None,
     ):
         self.dev = tvm.device("cuda", 0)
 
@@ -58,7 +56,6 @@ class StableDiffusionTVMPipeline:
         self.clip = relax.VirtualMachine(text_encoder, self.dev)
         self.vae = relax.VirtualMachine(vae, self.dev)
         self.unet = relax.VirtualMachine(unet, self.dev)
-        self.controlnet = relax.VirtualMachine(controlnet, self.dev)
 
         self.tokenizer = self.original_pipe.tokenizer
         self.scheduler = self.original_pipe.scheduler
@@ -67,9 +64,6 @@ class StableDiffusionTVMPipeline:
         self.clip_params = transform_params(self.clip, clip_params, self.dev)
         self.unet_params = transform_params(self.unet, unet_params, self.dev)
         self.vae_params = transform_params(self.vae, vae_params, self.dev)
-        self.controlnet_params = transform_params(
-            self.controlnet, controlnet_params, self.dev
-        )
 
         # Warm up, for some reason from_dlpack can take > 0.7 sec on first call depending on environment
         inputs = [tvm.nd.array(np.zeros((1, 77)).astype("int64"), self.dev)]
@@ -83,15 +77,13 @@ class StableDiffusionTVMPipeline:
         latent_model_input,
         timesteps,
         encoder_hidden_states,
-        down_block_res_samples,
-        mid_block_res_sample,
+        image,
     ):
         inputs = [
             convert_to_ndarray(latent_model_input),
             tvm.nd.array(timesteps.numpy().astype("int64"), self.dev),
             convert_to_ndarray(encoder_hidden_states),
-            *(convert_to_ndarray(sample) for sample in down_block_res_samples),
-            convert_to_ndarray(mid_block_res_sample),
+            convert_to_ndarray(image),
         ]
 
         if self.unet_params:
@@ -114,30 +106,6 @@ class StableDiffusionTVMPipeline:
             inputs.append(self.vae_params)
 
         return from_dlpack(self.vae["main"](*inputs)) / 255
-
-    def controlnet_inference(
-        self,
-        latent_model_input,
-        timesteps,
-        text_embeddings,
-        image,
-        controlnet_conditioning_scale,
-    ):
-        # TODO
-        assert controlnet_conditioning_scale == 1
-        inputs = [
-            convert_to_ndarray(latent_model_input),
-            tvm.nd.array(timesteps.numpy().astype("int64"), self.dev),
-            convert_to_ndarray(text_embeddings),
-            convert_to_ndarray(image),
-        ]
-
-        if self.controlnet_params:
-            inputs.append(self.controlnet_params)
-
-        out = self.controlnet["main"](*inputs)
-        down_block_res_samples, mid_block_res_sample = out[0:-1], out[-1]
-        return tuple(from_dlpack(arr) for arr in down_block_res_samples), from_dlpack(mid_block_res_sample)
 
     def prepare_image(
         self,
@@ -283,7 +251,7 @@ class StableDiffusionTVMPipeline:
             batch_size=batch_size,
             num_images_per_prompt=1,
             device="cuda",
-            dtype=torch.float32, # TODO
+            dtype=torch.float32,  # TODO
             do_classifier_free_guidance=do_classifier_free_guidance,
         )
 
@@ -315,21 +283,11 @@ class StableDiffusionTVMPipeline:
 
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-            # t1 = time.time()
-            down_block_res_samples, mid_block_res_sample = self.controlnet_inference(
-                latent_model_input,
-                t,
-                text_embeddings,
-                image,
-                controlnet_conditioning_scale,
-            )
-
             noise_pred = self.unet_inference(
                 latent_model_input,
                 t,
                 text_embeddings,
-                down_block_res_samples,
-                mid_block_res_sample,
+                image,
             )
 
             if do_classifier_free_guidance:
@@ -394,25 +352,21 @@ if bind_params:
     clip = tvm.runtime.load_module("clip.so")
     unet = tvm.runtime.load_module("unet.so")
     vae = tvm.runtime.load_module("vae.so")
-    controlnet = tvm.runtime.load_module("controlnet.so")
 
     pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae, controlnet)
 else:
     clip, clip_params = load_model_and_params("clip")
     vae, vae_params = load_model_and_params("vae")
     unet, unet_params = load_model_and_params("unet")
-    controlnet, controlnet_params = load_model_and_params("controlnet")
 
     pipe_tvm = StableDiffusionTVMPipeline(
         pipe,
         clip,
         unet,
         vae,
-        controlnet,
         clip_params,
         unet_params,
         vae_params,
-        controlnet_params,
     )
 
 prompt = "bird"

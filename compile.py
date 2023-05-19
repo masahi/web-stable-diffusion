@@ -248,7 +248,7 @@ def get_ref(mod, params, target, dev, inputs, bind_params=True):
 
 bind_params = False
 verify = False
-combine_matmul = True  # TODO
+combine_matmul = True
 
 model = "unet"
 # hidden_dim = 1024 # for v2.1
@@ -271,12 +271,7 @@ if model == "unet":
     controlnet_cond = tvm.nd.array(
         np.random.randn(2, 3, 512, 512).astype("float32"), dev
     )
-    inputs = [
-        inp_0,
-        inp_1,
-        inp_2,
-        controlnet_cond
-    ]
+    inputs = [inp_0, inp_1, inp_2, controlnet_cond]
 elif model == "vae":
     inputs = [inp_0]
 else:
