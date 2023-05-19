@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from diffusers.utils import load_image, PIL_INTERPOLATION
+from controlnet_aux import OpenposeDetector
 
 
 def get_init_image_canny(img_path):
@@ -16,6 +17,12 @@ def get_init_image_canny(img_path):
     image = image[:, :, None]
     image = np.concatenate([image, image, image], axis=2)
     return PIL.Image.fromarray(image)
+
+
+def get_init_image_openpose(img_path):
+    openpose = OpenposeDetector.from_pretrained('lllyasviel/ControlNet')
+    image = load_image(img_path)
+    return openpose(image)
 
 
 def prepare_image(

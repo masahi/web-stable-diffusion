@@ -20,7 +20,11 @@ from diffusers import (
 
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
-from controlnet_utils import get_init_image_canny, prepare_image
+from controlnet_utils import (
+    get_init_image_canny,
+    get_init_image_openpose,
+    prepare_image,
+)
 
 
 def convert_to_ndarray(tensor):
@@ -251,9 +255,13 @@ class StableDiffusionTVMPipeline:
         )
 
 
-def load_model_and_params(prefix):
+def load_model_and_params(prefix, param_file=None):
     mod = tvm.runtime.load_module(f"{prefix}_no_params.so")
-    param_dict = tvm.runtime.load_param_dict_from_file(f"{prefix}_fp16.params")
+
+    if param_file is None:
+        param_file = f"{prefix}_fp16.params"
+
+    param_dict = tvm.runtime.load_param_dict_from_file(param_file)
 
     names = param_dict.keys()
     sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
@@ -265,7 +273,20 @@ path = "runwayml/stable-diffusion-v1-5"
 
 bind_params = False
 
-controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny")
+# controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny")
+# init_image = get_init_image_canny(
+#     "https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/images/bird.png"
+# )
+# param_file = None
+# prompt = "bird"
+
+controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose")
+init_image = get_init_image_openpose(
+    "https://huggingface.co/lllyasviel/sd-controlnet-openpose/resolve/main/images/pose.png"
+)
+param_file = "sd-controlnet-openpose_unet_fp16.params"
+prompt = "chef in the kitchen"
+
 pipe = StableDiffusionControlNetPipeline.from_pretrained(path, controlnet=controlnet)
 
 pipe.safety_checker = None
@@ -280,7 +301,7 @@ if bind_params:
 else:
     clip, clip_params = load_model_and_params("clip")
     vae, vae_params = load_model_and_params("vae")
-    unet, unet_params = load_model_and_params("unet")
+    unet, unet_params = load_model_and_params("unet", param_file=param_file)
 
     pipe_tvm = StableDiffusionTVMPipeline(
         pipe,
@@ -291,11 +312,6 @@ else:
         unet_params,
         vae_params,
     )
-
-prompt = "bird"
-init_image = get_init_image_canny(
-    "https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/images/bird.png"
-)
 
 t1 = time.time()
 sample = pipe_tvm(prompt=prompt, image=init_image, num_inference_steps=25)["images"][0]
