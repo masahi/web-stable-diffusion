@@ -88,9 +88,9 @@ class StableDiffusionTVMPipeline:
     ):
         inputs = [
             convert_to_ndarray(latent_model_input),
-            tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
+            tvm.nd.array(timesteps.numpy().astype("int64"), self.dev),
             convert_to_ndarray(encoder_hidden_states),
-            tuple(convert_to_ndarray(sample) for sample in down_block_res_samples),
+            *(convert_to_ndarray(sample) for sample in down_block_res_samples),
             convert_to_ndarray(mid_block_res_sample),
         ]
 
@@ -98,8 +98,6 @@ class StableDiffusionTVMPipeline:
             inputs.append(self.unet_params)
 
         return from_dlpack(self.unet["main"](*inputs))
-        # return self.original_pipe.unet(latent_model_input, timesteps, encoder_hidden_states, down_block_additional_residuals=down_block_res_samples, mid_block_additional_residual=mid_block_res_sample, return_dict=False)[0]
-
 
     def clip_inference(self, input_ids):
         inputs = [convert_to_ndarray(input_ids)]
@@ -308,8 +306,6 @@ class StableDiffusionTVMPipeline:
 
         assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
 
-        import time
-
         for _, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
@@ -327,9 +323,7 @@ class StableDiffusionTVMPipeline:
                 image,
                 controlnet_conditioning_scale,
             )
-            # print("controlnet:", time.time() - t1)
 
-            # t1 = time.time()
             noise_pred = self.unet_inference(
                 latent_model_input,
                 t,
@@ -337,7 +331,6 @@ class StableDiffusionTVMPipeline:
                 down_block_res_samples,
                 mid_block_res_sample,
             )
-            # print("unet:", time.time() - t1)
 
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)

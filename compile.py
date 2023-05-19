@@ -298,7 +298,7 @@ if model == "unet":
         inp_0,
         inp_1,
         inp_2,
-        down_block_additional_residuals,
+        *down_block_additional_residuals,
         mid_block_additional_residual,
     ]
 elif model == "controlnet":
@@ -342,11 +342,11 @@ else:
         mod, fp16_input_names=fp16_input_names, combine_matmul=combine_matmul
     )
 
-# if "cuda" in target.kind.name:
-#     mod = partition_for_cutlass(mod)
-#     mod = relax.transform.RunCodegen(
-#         {"cutlass": {"sm": 80, "find_first_valid": False}}
-#     )(mod)
+if "cuda" in target.kind.name:
+    mod = partition_for_cutlass(mod)
+    mod = relax.transform.RunCodegen(
+        {"cutlass": {"sm": 80, "find_first_valid": False}}
+    )(mod)
 
 mod = run_lower_passes(mod, target, tune=True)
 
