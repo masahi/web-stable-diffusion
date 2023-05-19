@@ -22,11 +22,15 @@ def serialize(mod, params, prefix):
 
 
 controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny")
-pipe = StableDiffusionControlNetPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", controlnet=controlnet)
+pipe = StableDiffusionControlNetPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5", controlnet=controlnet
+)
 
 clip, params_clip = detach_params(trace.clip_to_text_embeddings(pipe))
 vae, params_vae = detach_params(trace.vae_to_image(pipe))
-unet, params_unet = detach_params(trace.unet_latents_to_noise_pred_controlnet(pipe, "cuda"))
+unet, params_unet = detach_params(
+    trace.unet_latents_to_noise_pred_controlnet(pipe, "cuda")
+)
 
 serialize(clip, params_clip, "clip")
 serialize(vae, params_vae, "vae")

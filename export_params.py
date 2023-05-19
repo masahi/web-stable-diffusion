@@ -13,7 +13,9 @@ def export_params(pipe, output_prefix):
     vae, params_vae = detach_params(trace.vae_to_image(pipe))
 
     if isinstance(pipe, StableDiffusionControlNetPipeline):
-        unet, params_unet = detach_params(trace.unet_latents_to_noise_pred_controlnet(pipe, "mps"))
+        unet, params_unet = detach_params(
+            trace.unet_latents_to_noise_pred_controlnet(pipe, "mps")
+        )
     else:
         unet, params_unet = detach_params(trace.unet_latents_to_noise_pred(pipe, "mps"))
 
@@ -36,6 +38,8 @@ def export_params(pipe, output_prefix):
 
 
 controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose")
-pipe = StableDiffusionControlNetPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", controlnet=controlnet)
+pipe = StableDiffusionControlNetPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5", controlnet=controlnet
+)
 
 export_params(pipe, "sd-controlnet-openpose")

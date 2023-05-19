@@ -1,8 +1,4 @@
 import PIL.Image
-import cv2
-
-import requests
-from io import BytesIO
 
 import torch
 from torch.utils.dlpack import to_dlpack, from_dlpack
@@ -21,10 +17,10 @@ from diffusers import (
     StableDiffusionControlNetPipeline,
     ControlNetModel,
 )
-from diffusers.utils import PIL_INTERPOLATION
 
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
-from diffusers.utils import load_image
+
+from controlnet_utils import get_init_image_canny, prepare_image
 
 
 def convert_to_ndarray(tensor):
@@ -107,59 +103,6 @@ class StableDiffusionTVMPipeline:
 
         return from_dlpack(self.vae["main"](*inputs)) / 255
 
-    def prepare_image(
-        self,
-        image,
-        width,
-        height,
-        batch_size,
-        num_images_per_prompt,
-        device,
-        dtype,
-        do_classifier_free_guidance=False,
-    ):
-        if not isinstance(image, torch.Tensor):
-            if isinstance(image, PIL.Image.Image):
-                image = [image]
-
-            if isinstance(image[0], PIL.Image.Image):
-                images = []
-
-                for image_ in image:
-                    image_ = image_.convert("RGB")
-                    image_ = image_.resize(
-                        (width, height), resample=PIL_INTERPOLATION["lanczos"]
-                    )
-                    image_ = np.array(image_)
-                    image_ = image_[None, :]
-                    images.append(image_)
-
-                image = images
-
-                image = np.concatenate(image, axis=0)
-                image = np.array(image).astype(np.float32) / 255.0
-                image = image.transpose(0, 3, 1, 2)
-                image = torch.from_numpy(image)
-            elif isinstance(image[0], torch.Tensor):
-                image = torch.cat(image, dim=0)
-
-        image_batch_size = image.shape[0]
-
-        if image_batch_size == 1:
-            repeat_by = batch_size
-        else:
-            # image batch size is the same as prompt batch size
-            repeat_by = num_images_per_prompt
-
-        image = image.repeat_interleave(repeat_by, dim=0)
-
-        image = image.to(device=device, dtype=dtype)
-
-        if do_classifier_free_guidance:
-            image = torch.cat([image] * 2)
-
-        return image
-
     @torch.no_grad()
     def __call__(
         self,
@@ -185,6 +128,7 @@ class StableDiffusionTVMPipeline:
     ):
         batch_size = 1
         assert height == 512 and width == 512
+        assert controlnet_conditioning_scale == 1
 
         text_input = self.tokenizer(
             prompt,
@@ -244,7 +188,7 @@ class StableDiffusionTVMPipeline:
         if accepts_offset:
             extra_set_kwargs["offset"] = 1
 
-        image = self.prepare_image(
+        image = prepare_image(
             image=image,
             width=width,
             height=height,
@@ -323,21 +267,6 @@ def load_model_and_params(prefix):
     return mod, [param_dict[name] for name in sorted_names]
 
 
-def get_init_image():
-    image = load_image(
-        "https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/images/bird.png"
-    )
-    image = np.array(image)
-
-    low_threshold = 100
-    high_threshold = 200
-
-    image = cv2.Canny(image, low_threshold, high_threshold)
-    image = image[:, :, None]
-    image = np.concatenate([image, image, image], axis=2)
-    return PIL.Image.fromarray(image)
-
-
 path = "runwayml/stable-diffusion-v1-5"
 
 bind_params = False
@@ -370,7 +299,9 @@ else:
     )
 
 prompt = "bird"
-init_image = get_init_image()
+init_image = get_init_image_canny(
+    "https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/images/bird.png"
+)
 
 t1 = time.time()
 sample = pipe_tvm(prompt=prompt, image=init_image, num_inference_steps=25)["images"][0]
