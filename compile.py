@@ -146,8 +146,14 @@ def get_rewrite_pass(combine_matmul=False):
         mod["main"] = simplify_stride_slice(mod["main"])
 
         if combine_matmul:
-            mod["main"] = combine_parallel_matmul(mod["main"], 14)
-            mod["main"] = combine_parallel_matmul(mod["main"], 3)
+            # HACK
+            if model == "controlnet":
+                mod["main"] = combine_parallel_matmul(mod["main"], 14)
+                mod["main"] = combine_parallel_matmul(mod["main"], 3)
+            elif model == "unet":
+                mod["main"] = combine_parallel_matmul(mod["main"], 32)
+                mod["main"] = combine_parallel_matmul(mod["main"], 22)
+                mod["main"] = combine_parallel_matmul(mod["main"], 3)
 
         return mod
 
@@ -249,7 +255,7 @@ bind_params = False
 verify = False
 combine_matmul = True  # TODO
 
-model = "vae"
+model = "unet"
 # hidden_dim = 1024 # for v2.1
 hidden_dim = 768  # for v1.5
 
@@ -336,11 +342,11 @@ else:
         mod, fp16_input_names=fp16_input_names, combine_matmul=combine_matmul
     )
 
-if "cuda" in target.kind.name:
-    mod = partition_for_cutlass(mod)
-    mod = relax.transform.RunCodegen(
-        {"cutlass": {"sm": 80, "find_first_valid": False}}
-    )(mod)
+# if "cuda" in target.kind.name:
+#     mod = partition_for_cutlass(mod)
+#     mod = relax.transform.RunCodegen(
+#         {"cutlass": {"sm": 80, "find_first_valid": False}}
+#     )(mod)
 
 mod = run_lower_passes(mod, target, tune=True)
 

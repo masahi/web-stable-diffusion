@@ -98,6 +98,8 @@ class StableDiffusionTVMPipeline:
             inputs.append(self.unet_params)
 
         return from_dlpack(self.unet["main"](*inputs))
+        # return self.original_pipe.unet(latent_model_input, timesteps, encoder_hidden_states, down_block_additional_residuals=down_block_res_samples, mid_block_additional_residual=mid_block_res_sample, return_dict=False)[0]
+
 
     def clip_inference(self, input_ids):
         inputs = [convert_to_ndarray(input_ids)]
@@ -137,7 +139,7 @@ class StableDiffusionTVMPipeline:
 
         out = self.controlnet["main"](*inputs)
         down_block_res_samples, mid_block_res_sample = out[0:-1], out[-1]
-        return (from_dlpack(arr) for arr in down_block_res_samples), from_dlpack(mid_block_res_sample)
+        return tuple(from_dlpack(arr) for arr in down_block_res_samples), from_dlpack(mid_block_res_sample)
 
     def prepare_image(
         self,
