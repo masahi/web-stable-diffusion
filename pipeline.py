@@ -247,17 +247,20 @@ class StableDiffusionTVMPipeline:
         )
 
 
-def test(model):
+def test_perf(model):
     hidden_dim = 768
     target = tvm.target.Target("nvidia/geforce-rtx-3070")
     dev = tvm.device(target.kind.name, 0)
 
     inp_0 = tvm.nd.array(np.random.randn(1, 4, 64, 64).astype("float32"), dev)
-    inp_1 = tvm.nd.array(np.array(1, "int32"), dev)
+    inp_1 = tvm.nd.array(np.array(1, "int64"), dev)
     inp_2 = tvm.nd.array(np.random.randn(2, 77, hidden_dim).astype("float32"), dev)
 
     if model == "unet":
-        inputs = [inp_0, inp_1, inp_2]
+        controlnet_cond = tvm.nd.array(
+            np.random.randn(2, 3, 512, 512).astype("float32"), dev
+        )
+        inputs = [inp_0, inp_1, inp_2, controlnet_cond]
     elif model == "vae":
         inputs = [inp_0]
     else:
@@ -266,10 +269,6 @@ def test(model):
                 np.random.randint(low=0, high=1000, size=(1, 77)).astype("int64"), dev
             )
         ]
-
-    # so_name = "{}.so".format(model)
-    # ex = tvm.runtime.load_module(so_name)
-    # vm = relax.VirtualMachine(ex, dev, profile=True)
 
     ex, params = load_model_and_params(model)
     vm = relax.VirtualMachine(ex, dev, profile=True)
@@ -424,3 +423,4 @@ def test_controlnet():
 
 
 test_controlnet()
+# test_perf("unet")

@@ -192,7 +192,7 @@ def run_lower_passes(mod, target, tune=False):
                 # passes.append(relax.transform.MetaScheduleTuneIRMod(
                 #     params={},
                 #     work_dir=work_dir,
-                #     max_trials_global=1500,
+                #     max_trials_global=2000,
                 #     # max_trials_per_task=50,
                 #     # op_names=["group_norm"]
                 # ))
@@ -315,6 +315,8 @@ mod = run_lower_passes(mod, target, tune=True)
 
 if not bind_params:
     mod = relax.transform.LiftTransformParams()(mod)
+
+# print(mod.without_attr("external_mods").without_attr("const_name_to_constant"))
 
 with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": False}):
     ex = relax.build(mod, target)
