@@ -17,8 +17,16 @@ from diffusers import (
     EulerDiscreteScheduler,
     EulerAncestralDiscreteScheduler,
     DPMSolverMultistepScheduler,
+    StableDiffusionControlNetPipeline,
+    ControlNetModel,
 )
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
+
+from controlnet_utils import (
+    get_init_image_canny,
+    get_init_image_openpose,
+    prepare_image,
+)
 
 
 def convert_to_ndarray(tensor):
@@ -65,12 +73,17 @@ class StableDiffusionTVMPipeline:
 
         from_dlpack(self.clip["main"](*inputs))
 
-    def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
+    def unet_inference(
+        self, latent_model_input, timesteps, encoder_hidden_states, image=None
+    ):
         inputs = [
             convert_to_ndarray(latent_model_input),
-            tvm.nd.array(timesteps.numpy().astype("int32"), self.dev),
+            tvm.nd.array(timesteps.numpy().astype("int64"), self.dev),
             convert_to_ndarray(encoder_hidden_states),
         ]
+
+        if image is not None:
+            inputs.append(convert_to_ndarray(image))
 
         if self.unet_params:
             inputs.append(self.unet_params)
@@ -97,6 +110,7 @@ class StableDiffusionTVMPipeline:
     def __call__(
         self,
         prompt: Union[str, List[str]],
+        image: torch.FloatTensor = None,
         height: Optional[int] = 512,
         width: Optional[int] = 512,
         num_inference_steps: Optional[int] = 50,
@@ -189,13 +203,25 @@ class StableDiffusionTVMPipeline:
 
         assert not isinstance(self.scheduler, LMSDiscreteScheduler), "Not implemented"
 
+        if image:
+            image = prepare_image(
+                image=image,
+                width=width,
+                height=height,
+                batch_size=batch_size,
+                num_images_per_prompt=1,
+                device="cuda",
+                dtype=torch.float32,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+            )
+
         for _, t in enumerate(
             self.original_pipe.progress_bar(self.scheduler.timesteps)
         ):
             latents_input = self.scheduler.scale_model_input(latents, t)
 
             noise_pred = self.unet_inference(
-                latents_input, t, encoder_hidden_states=text_embeddings
+                latents_input, t, encoder_hidden_states=text_embeddings, image=image
             )
 
             if do_classifier_free_guidance:
@@ -256,9 +282,13 @@ def test(model):
     print(vm.time_evaluator("invoke_stateful", dev, repeat=50)("main"))
 
 
-def load_model_and_params(prefix):
+def load_model_and_params(prefix, param_file=None):
     mod = tvm.runtime.load_module(f"{prefix}_no_params.so")
-    param_dict = tvm.runtime.load_param_dict_from_file(f"{prefix}_fp16.params")
+
+    if param_file is None:
+        param_file = f"{prefix}_fp16.params"
+
+    param_dict = tvm.runtime.load_param_dict_from_file(param_file)
 
     names = param_dict.keys()
     sorted_names = sorted(names, key=lambda name: int(name[name.rfind("_") + 1 :]))
@@ -266,47 +296,20 @@ def load_model_and_params(prefix):
     return mod, [param_dict[name] for name in sorted_names]
 
 
-bind_params = False
+def test_lora():
+    pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 
-# test("unet")
+    pipe.unet.load_attn_procs("pcuenq/pokemon-lora")
 
-pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
-pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    lora_weights = {}
 
-pipe.unet.load_attn_procs("pcuenq/pokemon-lora")
+    for k, v in pipe.unet.state_dict().items():
+        if "lora" in k:
+            lora_weights[k] = v
 
-lora_weights = {}
-
-for k, v in pipe.unet.state_dict().items():
-    if "lora" in k:
-        lora_weights[k] = v
-
-# for k, v in lora_weights.items():
-#     print(k, v.shape)
-
-# pipe = StableDiffusionPipeline.from_pretrained("XpucT/Deliberate")
-# pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
-# torch.manual_seed(1791574510)
-
-# # model_id = "stabilityai/stable-diffusion-2-1-base"
-# # scheduler = EulerDiscreteScheduler.from_pretrained(model_id, subfolder="scheduler")
-# # pipe = StableDiffusionPipeline.from_pretrained(model_id, scheduler=scheduler)
-
-pipe.safety_checker = None
-# pipe.to("cuda")
-# pipe.enable_xformers_memory_efficient_attention()
-
-
-if bind_params:
-    clip = tvm.runtime.load_module("clip.so")
-    unet = tvm.runtime.load_module("unet.so")
-    vae = tvm.runtime.load_module("vae.so")
-
-    pipe_tvm = StableDiffusionTVMPipeline(pipe, clip, unet, vae)
-else:
     clip, clip_params = load_model_and_params("clip")
     vae, vae_params = load_model_and_params("vae")
-    # unet, unet_params = load_model_and_params("unet")
 
     param_dict = tvm.runtime.load_param_dict_from_file("unet_fp16.params")
 
@@ -366,11 +369,58 @@ else:
         pipe, clip, unet, vae, clip_params, unet_params, vae_params
     )
 
-t1 = time.time()
-sample = pipe_tvm("Green pokemon with menacing face", num_inference_steps=25)["images"][
-    0
-]
-t2 = time.time()
+    t1 = time.time()
+    sample = pipe_tvm("Green pokemon with menacing face", num_inference_steps=25)[
+        "images"
+    ][0]
+    t2 = time.time()
 
-sample.save("out.png")
-print(t2 - t1)
+    sample.save("out.png")
+    print(t2 - t1)
+
+
+def test_controlnet():
+    # controlnet_id = "lllyasviel/sd-controlnet-canny"
+    # init_image = get_init_image_canny(
+    #     "https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/images/bird.png"
+    # )
+    # param_file = None
+    # prompt = "bird"
+
+    controlnet_id = "lllyasviel/sd-controlnet-openpose"
+    init_image = get_init_image_openpose(
+        "https://huggingface.co/lllyasviel/sd-controlnet-openpose/resolve/main/images/pose.png"
+    )
+    param_file = "sd-controlnet-openpose_unet_fp16.params"
+    prompt = "chef in the kitchen"
+
+    controlnet = ControlNetModel.from_pretrained(controlnet_id)
+    pipe = StableDiffusionControlNetPipeline.from_pretrained(
+        "runwayml/stable-diffusion-v1-5", controlnet=controlnet
+    )
+
+    clip, clip_params = load_model_and_params("clip")
+    vae, vae_params = load_model_and_params("vae")
+    unet, unet_params = load_model_and_params("unet", param_file=param_file)
+
+    pipe_tvm = StableDiffusionTVMPipeline(
+        pipe,
+        clip,
+        unet,
+        vae,
+        clip_params,
+        unet_params,
+        vae_params,
+    )
+
+    t1 = time.time()
+    sample = pipe_tvm(prompt=prompt, image=init_image, num_inference_steps=25)[
+        "images"
+    ][0]
+    t2 = time.time()
+
+    sample.save("out.png")
+    print(t2 - t1)
+
+
+test_controlnet()
